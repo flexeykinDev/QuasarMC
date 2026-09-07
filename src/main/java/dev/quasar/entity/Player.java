@@ -11,6 +11,7 @@ import dev.quasar.net.Protocol;
 import dev.quasar.util.Log;
 import dev.quasar.world.Chunk;
 import dev.quasar.world.ChunkPos;
+import dev.quasar.world.block.BlockConnections;
 import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.Blocks;
 import io.netty.buffer.ByteBuf;
@@ -328,6 +329,7 @@ public final class Player extends Entity {
             int previous = server.world().getBlock(x, y, z);
             if (!Blocks.isAir(previous)) {
                 server.world().setBlock(x, y, z, Blocks.AIR);
+                refreshConnections(region, x, y, z);
                 Log.debug("%s broke block %d at %d,%d,%d (region #%d)",
                         name, previous, x, y, z, region.id());
             }
@@ -368,6 +370,7 @@ public final class Player extends Entity {
                 int placed = BlockPlacement.stateFor(
                         state, face, cursorY, yaw, Blocks.isWater(existing));
                 server.world().setBlock(x, y, z, placed);
+                refreshConnections(region, x, y, z);
                 Log.debug("%s placed block %d at %d,%d,%d (item state %d, face %d, slot %d, region #%d)",
                         name, placed, x, y, z, state, face, heldSlot, region.id());
             } else {
@@ -419,6 +422,40 @@ public final class Player extends Entity {
             return false;
         }
         return true;
+    }
+
+    /**
+     * Re-derives connection state for a changed position and its four horizontal neighbours.
+     *
+     * <p>Connections are mutual: placing a fence has to update the fence beside it too, and
+     * breaking one has to make its neighbour let go. Only the horizontal ring matters — no family
+     * handled here connects vertically.
+     *
+     * <p>Confined to chunks this region owns, so it cannot reach across into another thread's
+     * state. At the edge of a region that means a connection is left stale rather than computed
+     * unsafely.
+     */
+    private void refreshConnections(Region region, int x, int y, int z) {
+        applyConnection(region, x, y, z);
+        applyConnection(region, x - 1, y, z);
+        applyConnection(region, x + 1, y, z);
+        applyConnection(region, x, y, z - 1);
+        applyConnection(region, x, y, z + 1);
+    }
+
+    private void applyConnection(Region region, int x, int y, int z) {
+        if (!region.ownsChunk(x >> 4, z >> 4)) {
+            return;
+        }
+        int current = server.world().getBlock(x, y, z);
+        if (Blocks.isAir(current)) {
+            return;
+        }
+        int connected = BlockConnections.updatedState(server.world()::getBlock, x, y, z, current);
+        if (connected != current) {
+            server.world().setBlock(x, y, z, connected);
+            broadcastBlockUpdate(region, x, y, z, connected);
+        }
     }
 
     private void broadcastBlockUpdate(Region region, int x, int y, int z, int state) {

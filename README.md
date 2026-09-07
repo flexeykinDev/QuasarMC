@@ -243,9 +243,11 @@ differing write, so the mostly-air-or-stone sections of a generated world stay c
 
 ## Next steps, roughly in order of value
 
-1. Entity tracking, so players can see each other.
-2. Connected shapes: stair corners and fence/wall connections, derived from neighbouring blocks.
-3. A light engine.
+1. Pick block, so middle-click selects what you are looking at.
+2. Player data, so you return where you left off.
+3. Entity tracking, so players can see each other.
+4. Block entities, so chests and signs hold their contents.
+5. A light engine.
 
 ## Persistence — Anvil
 
@@ -350,9 +352,30 @@ leaves the chest alone.
 Stairs face the way the player looks, so you walk up them going forwards; almost everything else
 faces back towards the player so its front is the side you can see.
 
-Not handled: stair and fence *shapes*, which vanilla derives from neighbouring blocks, so stairs do
-not auto-corner. Blocks whose facing comes from the clicked face rather than the player — wall
-torches, buttons, levers — keep their default state. Slabs do not merge into double slabs.
+Not handled: blocks whose facing comes from the clicked face rather than the player — wall torches,
+buttons, levers — keep their default state. Slabs do not merge into double slabs.
+
+### Connection state
+
+Some properties come from a block's *neighbours* rather than from the click, and have to be
+recomputed on both sides whenever anything changes nearby. Placing or breaking a block re-derives
+that position and its four horizontal neighbours:
+
+- **fences, glass panes, iron bars** — `north/south/east/west` booleans
+- **walls** — `none/low/tall` per side, plus a raised `up` post unless it is a straight run through
+- **stairs** — `shape`, giving inner and outer corners
+
+Stair corners follow vanilla exactly, including the rule that suppresses a corner when the
+neighbour is a stair of the same facing and half, so straight runs stay straight.
+
+Fences match on the exact material, so oak does not join nether brick. Joining to ordinary *solid*
+blocks is an approximation: neither the block report nor the protocol carries collision or shape
+data, so solidity is inferred from the block's name against a curated list of decorative and
+non-collidable families. Everything unmatched counts as solid, which is right far more often than
+not; the failure mode is a fence connecting to something decorative it should have ignored.
+
+Updates stop at the edge of the region that owns the chunk, so a connection there is left stale
+rather than computed by reaching into another thread's state.
 
 ### Data files
 
