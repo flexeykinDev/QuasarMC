@@ -28,15 +28,17 @@ before you judge it:
 - Entity tracking, so players see each other move
 - Player data, so you return where you left off
 - Block entities and working containers, stored in Anvil and preserved even when unmodelled
+- Item entities: drops fall, merge, and are picked up with no duplication or loss
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
-- **Block behaviour.** No redstone, fluids, random ticks, block entities, or crafting. Blocks can be
-  broken and placed, but nothing reacts: gravel floats, water does not flow.
+- **Block behaviour.** No redstone, fluids, random ticks, or crafting. Blocks can be broken and
+  placed, but nothing reacts: gravel floats, water does not flow.
 - **Mobs, combat, physics.** Players move; nothing else does.
-- **Survival mechanics.** Containers work and the inventory is real, but there is no item pickup, no
-  crafting, no item entities and no stack accounting on placement — creative items are infinite and
-  placing never consumes one.
+- **Survival mechanics.** Containers, the inventory and item entities are real, but there is no
+  crafting, and no stack accounting on placement — creative items are infinite and placing never
+  consumes one. Breaking a block does not drop it, which matches vanilla creative.
+- **Item entity persistence.** Drops live in memory only; see [Item entities](#item-entities).
 - **Furnaces, brewing stands, enchanting tables.** Containers with processing logic, not just slots.
 - **Reading arbitrary vanilla worlds** without a `blocks.json` to hand. Worlds are Anvil, but the
   built-in block table only covers blocks this server itself uses. See
@@ -248,8 +250,8 @@ differing write, so the mostly-air-or-stone sections of a generated world stay c
 ## Next steps, roughly in order of value
 
 1. A light engine, so caves and interiors are not uniformly bright.
-2. Item entities, so broken blocks drop and dropped stacks land on the ground.
-3. Signs, so text can be written and read back.
+2. Signs, so text can be written and read back.
+3. Persisting item entities, which needs a rule for chunks that are only kept alive by a drop.
 
 ## Persistence — Anvil
 
@@ -519,6 +521,37 @@ Tab-list entries are managed separately from entity spawn: the entity comes and 
 but the tab entry lasts as long as the player is online, or the list would flicker as people walk
 in and out of view. Skins are not sent — that needs signed profile properties from Mojang's session
 servers, which an offline-mode server has no way to obtain.
+
+## Item entities
+
+Dropped stacks are real entities that fall, merge and are picked up.
+[`ItemEntity`](src/main/java/dev/quasar/entity/ItemEntity.java) is deliberately small: it falls
+straight down under gravity until a block is underneath, absorbs same-item stacks within one block,
+lets any player within 1.6 blocks collect it, and despawns after 6000 ticks (five minutes, as in
+vanilla) with a 20-tick delay before it can be regained.
+
+They arrive from four routes — throwing with Q, dropping the cursor stack outside the window,
+overflow when a container gives you more than fits, and the contents of a container you break.
+
+**No horizontal motion, on purpose.** Vanilla throws items in an arc and lets them bounce and slide,
+which needs real collision shapes. There are none here, and a half-simulated arc that clipped through
+walls would be worse than a stack that drops straight down.
+
+An item never changes its horizontal position, so it stays in the chunk it was dropped into and can
+never need state another region owns. That means the whole thing runs on the owning region's thread
+with the same zero-lock guarantee as everything else — merges and pickups are plain loops over
+`region.entities()`.
+
+**Two honest limits.** Items are *not persisted*: when their chunk unloads they are discarded rather
+than saved, and unlike a player they do not force a chunk to stay loaded. Persisting them without
+that second rule would mean every stack anyone ever threw held a chunk resident forever after the
+last player left. And *breaking a block does not drop the block* — players are in creative, where
+vanilla drops nothing either. Container contents do drop, because vanilla drops those even in
+creative.
+
+Add Entity carries no item stack, so a drop is invisible until its metadata arrives; the tracker
+sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
+partial pickup changes the count.
 
 ## Block editing, and why it needs no locks
 

@@ -56,6 +56,7 @@ public final class BotSwarm {
         private final AtomicInteger entitiesSpawned = new AtomicInteger();
         private final AtomicInteger entitiesRemoved = new AtomicInteger();
         private final AtomicInteger entityMoves = new AtomicInteger();
+        private final AtomicInteger itemsPickedUp = new AtomicInteger();
 
         private ProtocolState state = ProtocolState.LOGIN;
         private Channel channel;
@@ -205,6 +206,18 @@ public final class BotSwarm {
 
             } else if (packetId == Protocol.PLAY_CLIENTBOUND_MOVE_ENTITY_POS_ROT) {
                 entityMoves.incrementAndGet();
+
+            } else if (packetId == Protocol.PLAY_CLIENTBOUND_SET_ENTITY_DATA) {
+                int id = ByteBufs.readVarInt(data);
+                Log.info("[%s] entity %d metadata (%d bytes)", username, id, data.readableBytes());
+
+            } else if (packetId == Protocol.PLAY_CLIENTBOUND_TAKE_ITEM_ENTITY) {
+                int collected = ByteBufs.readVarInt(data);
+                int collector = ByteBufs.readVarInt(data);
+                int count = ByteBufs.readVarInt(data);
+                itemsPickedUp.addAndGet(count);
+                Log.info("[%s] entity %d collected %d item(s) from entity %d",
+                        username, collector, count, collected);
 
             } else if (packetId == Protocol.PLAY_CLIENTBOUND_REMOVE_ENTITIES) {
                 int count = ByteBufs.readVarInt(data);

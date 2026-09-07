@@ -5,8 +5,10 @@ import com.google.gson.JsonObject;
 import dev.quasar.config.ServerConfig;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.engine.RegionScheduler;
+import dev.quasar.entity.ItemEntity;
 import dev.quasar.entity.Player;
 import dev.quasar.item.HotbarKit;
+import dev.quasar.item.ItemStack;
 import dev.quasar.item.ItemRegistry;
 import dev.quasar.nbt.Nbt;
 import dev.quasar.net.Connection;
@@ -185,6 +187,19 @@ public final class QuasarServer {
      */
     public void saveWorld(boolean verbose) {
         saveWorld(verbose, false);
+    }
+
+    /**
+     * Drops a stack into the world.
+     *
+     * <p>The entity joins its region at the next safepoint, so it appears within a tick or two
+     * rather than instantly. Safe to call from a region thread.
+     */
+    public void spawnItem(ItemStack stack, double x, double y, double z, int pickupDelay) {
+        if (stack.isEmpty()) {
+            return;
+        }
+        regionManager.requestEntityAdd(new ItemEntity(this, stack, x, y, z, pickupDelay));
     }
 
     /** Snapshots a player to disk. Call from the thread that owns them. */

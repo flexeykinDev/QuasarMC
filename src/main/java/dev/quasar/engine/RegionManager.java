@@ -380,7 +380,14 @@ public final class RegionManager {
             region = chunkToRegion.get(ChunkPos.key(cx, cz));
         }
         if (region == null) {
-            // The chunk the entity wants is not loaded. Load it, then retry on the next safepoint.
+            // Only players are worth loading a chunk for. Anything else -- a dropped stack whose
+            // chunk has just unloaded -- is discarded instead, or item entities would hold chunks
+            // resident forever after everyone leaves.
+            if (!(entity instanceof dev.quasar.entity.Player)) {
+                entity.markRemoved();
+                return;
+            }
+            // The chunk the player wants is not loaded. Load it, then retry on the next safepoint.
             requestChunkAdd(cx, cz);
             pending.add(new Change.AddEntity(entity));
             return;

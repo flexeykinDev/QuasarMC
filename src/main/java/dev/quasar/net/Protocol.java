@@ -120,8 +120,27 @@ public final class Protocol {
     public static final int PLAY_CLIENTBOUND_PLAYER_INFO_REMOVE =
             id("play.clientbound.player_info_remove", 0x3F);
 
+    public static final int PLAY_CLIENTBOUND_SET_ENTITY_DATA =
+            id("play.clientbound.set_entity_data", 0x5D);
+    public static final int PLAY_CLIENTBOUND_TAKE_ITEM_ENTITY =
+            id("play.clientbound.take_item_entity", 0x76);
+
     /** Registry ID of {@code minecraft:player}, needed by Add Entity. */
     public static final int ENTITY_TYPE_PLAYER = Integer.getInteger("quasar.playerEntityType", 147);
+
+    /** Registry ID of {@code minecraft:item}. */
+    public static final int ENTITY_TYPE_ITEM = Integer.getInteger("quasar.itemEntityType", 68);
+
+    /**
+     * Entity metadata slot holding an item entity's stack, and the serializer that encodes it.
+     *
+     * <p>A dropped stack is invisible without this: Add Entity carries no item, so the client has
+     * nothing to render until the metadata arrives. Unlike packet and block IDs these are not in
+     * any generated report — they come from the order of the entity-data serializer registry — so
+     * they are overridable in case a version renumbers them.
+     */
+    public static final int ITEM_ENTITY_DATA_INDEX = Integer.getInteger("quasar.itemDataIndex", 8);
+    public static final int DATA_SERIALIZER_ITEM_STACK = Integer.getInteger("quasar.itemSerializer", 7);
 
     public static final int PLAY_SERVERBOUND_KEEP_ALIVE = id("play.serverbound.keep_alive", 0x1A);
     public static final int PLAY_SERVERBOUND_CHAT = id("play.serverbound.chat", 0x07);

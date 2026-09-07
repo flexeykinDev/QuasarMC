@@ -122,6 +122,10 @@ public final class PlayListener implements PacketListener {
                         player.breakBlock(region, position, sequence);
                     }
                 });
+            } else if (status == 3 || status == 4) {
+                // 3 is control-Q (the whole stack), 4 is a plain Q (one item).
+                boolean wholeStack = status == 3;
+                player.submit(() -> player.dropHeld(wholeStack));
             }
 
         } else if (packetId == Protocol.PLAY_SERVERBOUND_USE_ITEM_ON) {

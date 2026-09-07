@@ -509,9 +509,12 @@ public final class Player extends Entity {
         }
 
         if (slot == -999) {
-            // Clicked outside the window: vanilla drops the stack as an item entity. There are no
-            // item entities here, so the stack would simply vanish -- better to keep it on the
-            // cursor than to silently destroy it.
+            // Clicked outside the window: throw the held stack on the ground, as vanilla does.
+            if (!carried.isEmpty()) {
+                int thrown = button == 1 ? carried.count() : 1;
+                dropItem(carried.withCount(thrown));
+                carried = carried.shrink(thrown);
+            }
             sendContainerContent();
             return;
         }
@@ -524,6 +527,7 @@ public final class Player extends Entity {
             case 0 -> clickPickup(container, slot, button);
             case 1 -> clickQuickMove(container, slot);
             case 2 -> clickHotbarSwap(container, slot, button);
+            case 4 -> clickThrow(container, slot, button);
             case 6 -> clickCollectMatching(container);
             default -> { }
         }
@@ -624,6 +628,34 @@ public final class Player extends Entity {
         ItemStack inHotbar = inventorySlot(inventoryIndex);
         setWindowSlot(container, slot, inHotbar);
         setInventorySlot(inventoryIndex, inSlot);
+    }
+
+    /** Q over a slot: throw one item, or the whole stack with control held. */
+    private void clickThrow(OpenContainer container, int slot, int button) {
+        ItemStack inSlot = windowSlot(container, slot);
+        if (inSlot.isEmpty()) {
+            return;
+        }
+        int thrown = button == 1 ? inSlot.count() : 1;
+        dropItem(inSlot.withCount(thrown));
+        setWindowSlot(container, slot, inSlot.shrink(thrown));
+    }
+
+    /**
+     * Q with no container open: throw from the held hotbar slot.
+     *
+     * @param wholeStack true for the whole stack, false for a single item
+     */
+    public void dropHeld(boolean wholeStack) {
+        int slot = hotbarSlotIndex();
+        ItemStack held = inventorySlot(slot);
+        if (held.isEmpty()) {
+            return;
+        }
+        int thrown = wholeStack ? held.count() : 1;
+        dropItem(held.withCount(thrown));
+        setInventorySlot(slot, held.shrink(thrown));
+        sendInventory();
     }
 
     /** Double-click: gather matching stacks from the window onto the cursor. */
@@ -752,13 +784,26 @@ public final class Player extends Entity {
     }
 
     /**
-     * Puts a stack into the inventory, merging into matching stacks before taking empty slots.
+     * Puts a stack into the inventory, dropping whatever will not fit at the player's feet.
      *
-     * <p>Hotbar first, then the main grid, matching where vanilla puts a pickup. Anything that will
-     * not fit is discarded, and says so: with no item entities there is nowhere else for it to go,
-     * and losing it quietly is exactly the failure this method exists to prevent elsewhere.
+     * <p>Now that item entities exist there is somewhere for the overflow to go, so nothing is ever
+     * silently destroyed.
      */
     private void giveOrDrop(ItemStack stack) {
+        ItemStack leftover = insert(stack);
+        if (!leftover.isEmpty()) {
+            dropItem(leftover);
+        }
+    }
+
+    /**
+     * Fills what it can into the inventory, merging into matching stacks before taking empty slots.
+     *
+     * <p>Hotbar first, then the main grid, matching where vanilla puts a pickup.
+     *
+     * @return whatever did not fit
+     */
+    private ItemStack insert(ItemStack stack) {
         int[] order = new int[inventory.length - 9];
         int index = 0;
         for (int slot = HotbarKit.FIRST_HOTBAR_SLOT; slot < inventory.length; slot++) {
@@ -770,7 +815,7 @@ public final class Player extends Entity {
 
         for (int slot : order) {
             if (stack.isEmpty()) {
-                return;
+                return ItemStack.EMPTY;
             }
             ItemStack existing = inventory[slot];
             if (existing.stacksWith(stack)) {
@@ -783,17 +828,14 @@ public final class Player extends Entity {
         }
         for (int slot : order) {
             if (stack.isEmpty()) {
-                return;
+                return ItemStack.EMPTY;
             }
             if (inventory[slot].isEmpty()) {
                 setInventorySlot(slot, stack);
                 stack = ItemStack.EMPTY;
             }
         }
-        if (!stack.isEmpty()) {
-            Log.warn("%s has no room for %d x item %d; it is lost",
-                    name, stack.count(), stack.itemId());
-        }
+        return stack;
     }
 
     // ------------------------------------------------------------------------ entity tracking
@@ -827,23 +869,32 @@ public final class Player extends Entity {
         IntOpenHashSet visible = new IntOpenHashSet();
 
         for (Entity entity : region.entities()) {
-            if (entity == this || entity.isRemoved() || !(entity instanceof Player other)) {
+            if (entity == this || entity.isRemoved()) {
                 continue;
             }
-            double dx = other.x - x;
-            double dy = other.y - y;
-            double dz = other.z - z;
+            if (!(entity instanceof Player) && !(entity instanceof ItemEntity)) {
+                continue;
+            }
+            double dx = entity.x() - x;
+            double dy = entity.y() - y;
+            double dz = entity.z() - z;
             if (dx * dx + dy * dy + dz * dz > TRACK_RANGE_SQUARED) {
                 continue;
             }
-            visible.add(other.entityId());
+            visible.add(entity.entityId());
 
-            double[] last = trackedEntities.get(other.entityId());
+            double[] last = trackedEntities.get(entity.entityId());
             if (last == null) {
-                spawnEntity(other);
-                trackedEntities.put(other.entityId(), new double[] {other.x, other.y, other.z});
+                spawnEntity(entity);
+                trackedEntities.put(entity.entityId(),
+                        new double[] {entity.x(), entity.y(), entity.z()});
             } else {
-                sendEntityMove(other, last);
+                sendEntityMove(entity, last);
+                // A stack that grew by absorbing another has to be re-sent, or it keeps rendering
+                // at its old size.
+                if (entity instanceof ItemEntity item && item.consumeStackDirty()) {
+                    sendItemMetadata(item);
+                }
             }
         }
 
@@ -860,70 +911,95 @@ public final class Player extends Entity {
         }
     }
 
-    private void spawnEntity(Player other) {
-        // The client will not render a player entity it has no profile for, so the tab-list entry
-        // has to go first.
-        connection.send(Protocol.PLAY_CLIENTBOUND_PLAYER_INFO_UPDATE, buf -> {
-            buf.writeByte(0x01 | 0x08); // add_player | update_listed
-            ByteBufs.writeVarInt(buf, 1);
-            ByteBufs.writeUuid(buf, other.uuid());
-            ByteBufs.writeString(buf, other.name());
-            ByteBufs.writeVarInt(buf, 0);  // no signed profile properties, so no skin
-            buf.writeBoolean(true);        // listed in the tab list
+    private void spawnEntity(Entity entity) {
+        if (entity instanceof Player other) {
+            // The client will not render a player entity it has no profile for, so the tab-list
+            // entry has to go first.
+            connection.send(Protocol.PLAY_CLIENTBOUND_PLAYER_INFO_UPDATE, buf -> {
+                buf.writeByte(0x01 | 0x08); // add_player | update_listed
+                ByteBufs.writeVarInt(buf, 1);
+                ByteBufs.writeUuid(buf, other.uuid());
+                ByteBufs.writeString(buf, other.name());
+                ByteBufs.writeVarInt(buf, 0);  // no signed profile properties, so no skin
+                buf.writeBoolean(true);        // listed in the tab list
+            });
+        }
+
+        int type = entity instanceof Player
+                ? Protocol.ENTITY_TYPE_PLAYER : Protocol.ENTITY_TYPE_ITEM;
+        connection.send(Protocol.PLAY_CLIENTBOUND_ADD_ENTITY, buf -> {
+            ByteBufs.writeVarInt(buf, entity.entityId());
+            ByteBufs.writeUuid(buf, entity.uuid());
+            ByteBufs.writeVarInt(buf, type);
+            buf.writeDouble(entity.x());
+            buf.writeDouble(entity.y());
+            buf.writeDouble(entity.z());
+            ByteBufs.writeAngle(buf, entity.pitch());
+            ByteBufs.writeAngle(buf, entity.yaw());
+            ByteBufs.writeAngle(buf, entity.yaw()); // head yaw
+            ByteBufs.writeVarInt(buf, 0);           // type-specific data
+            buf.writeShort(0);
+            buf.writeShort(0);
+            buf.writeShort(0);
         });
 
-        connection.send(Protocol.PLAY_CLIENTBOUND_ADD_ENTITY, buf -> {
-            ByteBufs.writeVarInt(buf, other.entityId());
-            ByteBufs.writeUuid(buf, other.uuid());
-            ByteBufs.writeVarInt(buf, Protocol.ENTITY_TYPE_PLAYER);
-            buf.writeDouble(other.x);
-            buf.writeDouble(other.y);
-            buf.writeDouble(other.z);
-            ByteBufs.writeAngle(buf, other.pitch);
-            ByteBufs.writeAngle(buf, other.yaw);
-            ByteBufs.writeAngle(buf, other.yaw); // head yaw
-            ByteBufs.writeVarInt(buf, 0);        // type-specific data
-            buf.writeShort(0);
-            buf.writeShort(0);
-            buf.writeShort(0);
-        });
-        sendHeadRotation(other);
-        Log.trace("%s now sees %s", name, other.name());
+        if (entity instanceof Player other) {
+            sendHeadRotation(other);
+            Log.trace("%s now sees %s", name, other.name());
+        } else if (entity instanceof ItemEntity item) {
+            // Add Entity carries no item, so without this the stack is invisible.
+            sendItemMetadata(item);
+        }
     }
 
-    private void sendEntityMove(Player other, double[] last) {
-        double dx = other.x - last[0];
-        double dy = other.y - last[1];
-        double dz = other.z - last[2];
+    /** Entity metadata carrying an item entity's stack, then the 0xFF terminator. */
+    private void sendItemMetadata(ItemEntity item) {
+        connection.send(Protocol.PLAY_CLIENTBOUND_SET_ENTITY_DATA, buf -> {
+            ByteBufs.writeVarInt(buf, item.entityId());
+            buf.writeByte(Protocol.ITEM_ENTITY_DATA_INDEX);
+            ByteBufs.writeVarInt(buf, Protocol.DATA_SERIALIZER_ITEM_STACK);
+            ByteBufs.writeItemStack(buf, item.stack().itemId(), item.stack().count());
+            buf.writeByte(0xFF); // end of metadata
+        });
+    }
+
+    private void sendEntityMove(Entity entity, double[] last) {
+        double dx = entity.x() - last[0];
+        double dy = entity.y() - last[1];
+        double dz = entity.z() - last[2];
 
         if (Math.abs(dx) > MAX_DELTA || Math.abs(dy) > MAX_DELTA || Math.abs(dz) > MAX_DELTA) {
             // Too far for a delta: re-seed rather than reach for the reworked teleport packet.
-            despawnEntity(other.entityId());
-            spawnEntity(other);
-            last[0] = other.x;
-            last[1] = other.y;
-            last[2] = other.z;
+            despawnEntity(entity.entityId());
+            spawnEntity(entity);
+            last[0] = entity.x();
+            last[1] = entity.y();
+            last[2] = entity.z();
             return;
         }
         if (dx == 0 && dy == 0 && dz == 0) {
-            sendHeadRotation(other);
+            if (entity instanceof Player other) {
+                sendHeadRotation(other);
+            }
             return;
         }
 
         connection.send(Protocol.PLAY_CLIENTBOUND_MOVE_ENTITY_POS_ROT, buf -> {
-            ByteBufs.writeVarInt(buf, other.entityId());
+            ByteBufs.writeVarInt(buf, entity.entityId());
             buf.writeShort((int) (dx * 4096));
             buf.writeShort((int) (dy * 4096));
             buf.writeShort((int) (dz * 4096));
-            ByteBufs.writeAngle(buf, other.yaw);
-            ByteBufs.writeAngle(buf, other.pitch);
-            buf.writeBoolean(other.onGround);
+            ByteBufs.writeAngle(buf, entity.yaw());
+            ByteBufs.writeAngle(buf, entity.pitch());
+            buf.writeBoolean(entity.onGround());
         });
-        sendHeadRotation(other);
+        if (entity instanceof Player other) {
+            sendHeadRotation(other);
+        }
 
-        last[0] = other.x;
-        last[1] = other.y;
-        last[2] = other.z;
+        last[0] = entity.x();
+        last[1] = entity.y();
+        last[2] = entity.z();
     }
 
     /** Head yaw is separate from body yaw, and without it heads never turn. */
@@ -946,6 +1022,54 @@ public final class Player extends Entity {
             ByteBufs.writeVarInt(buf, 1);
             ByteBufs.writeUuid(buf, uuid);
         });
+    }
+
+    /**
+     * Takes what fits of a dropped stack.
+     *
+     * <p>Called by the item entity on the region thread. Returns how much was actually taken, so a
+     * stack that only partly fits leaves the rest lying there rather than disappearing.
+     *
+     * @return the number of items collected, possibly zero
+     */
+    public int collect(ItemEntity item, ItemStack offered) {
+        ItemStack leftover = insert(offered);
+        int taken = offered.count() - leftover.count();
+        if (taken <= 0) {
+            return 0;
+        }
+        // The pickup animation is per-observer, so it goes to everyone tracking the item, not just
+        // the collector.
+        for (Entity entity : item.region() == null ? java.util.List.<Entity>of()
+                : item.region().entities()) {
+            if (entity instanceof Player observer && !observer.isRemoved()
+                    && observer.trackedEntities.containsKey(item.entityId())) {
+                observer.sendPickupAnimation(item.entityId(), entityId(), taken);
+            }
+        }
+        sendInventory();
+        return taken;
+    }
+
+    private void sendPickupAnimation(int itemEntityId, int collectorId, int count) {
+        connection.send(Protocol.PLAY_CLIENTBOUND_TAKE_ITEM_ENTITY, buf -> {
+            ByteBufs.writeVarInt(buf, itemEntityId);
+            ByteBufs.writeVarInt(buf, collectorId);
+            ByteBufs.writeVarInt(buf, count);
+        });
+    }
+
+    /**
+     * Drops a stack into the world in front of the player.
+     *
+     * <p>Given a pickup delay so a thrown stack does not fly straight back into the inventory it
+     * just left.
+     */
+    public void dropItem(ItemStack stack) {
+        if (stack.isEmpty()) {
+            return;
+        }
+        server.spawnItem(stack, x, y + 1.2, z, ItemEntity.DEFAULT_PICKUP_DELAY);
     }
 
     private void despawnEntity(int entityId) {
@@ -1075,9 +1199,8 @@ public final class Player extends Entity {
     /**
      * Rescues a container's contents before its block is removed.
      *
-     * <p>Vanilla drops them on the ground as item entities. There are none here, so breaking a
-     * chest simply deleted whatever was inside — silent data loss, and unrecoverable. Handing the
-     * contents to whoever broke it is the closest non-destructive equivalent.
+     * <p>Dropped on the ground as item entities, which is what vanilla does — and it does so even
+     * in creative, unlike block drops.
      *
      * <p>Also closes the screen if it was this container, so a click afterwards cannot write stale
      * contents back over a block that no longer exists.
@@ -1108,17 +1231,16 @@ public final class Player extends Entity {
         if (entity == null) {
             return;
         }
-        int rescued = 0;
+        int dropped = 0;
         for (ItemStack stack : ContainerIo.readItems(entity, kind.slots())) {
             if (!stack.isEmpty()) {
-                giveOrDrop(stack);
-                rescued++;
+                server.spawnItem(stack, x + 0.5, y + 0.5, z + 0.5, ItemEntity.DEFAULT_PICKUP_DELAY);
+                dropped++;
             }
         }
-        if (rescued > 0) {
-            sendInventory();
-            Log.debug("%s broke %s at %d,%d,%d; %d stack(s) went to their inventory",
-                    name, state.name(), x, y, z, rescued);
+        if (dropped > 0) {
+            Log.debug("%s broke %s at %d,%d,%d; %d stack(s) dropped",
+                    name, state.name(), x, y, z, dropped);
         }
     }
 
