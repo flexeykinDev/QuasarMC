@@ -1,0 +1,30 @@
+.gradle/
+build/
+out/
+bin/
+*.class
+*.log
+logs/
+server.properties
+quasar.properties
+protocol.properties
+blocks.properties
+
+# Leading slashes matter: these are all root-level runtime directories, and an unanchored
+# "world/" would also swallow src/main/java/dev/quasar/world/ — the entire chunk subsystem.
+/world/
+/run/
+/run-*/
+
+# Mojang-generated reference data (regenerate with: java -jar server.jar --reports).
+# Kept out of the repo rather than redistributing Mojang's generated output. blocks.json and
+# registries.json are read at runtime for the full block and item tables.
+blocks.json
+registries.json
+items.json
+packets*.json
+registries-*.json
+.idea/
+*.iml
+.vscode/
+.claude/

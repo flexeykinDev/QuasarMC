@@ -1,0 +1,391 @@
+# Quasar
+
+A Minecraft server core written from scratch in Java 21, built around a **region-threaded** tick
+engine: the world is partitioned into independent regions that tick in parallel on separate
+threads, each at its own 20 TPS, with no global tick loop and no locks on world data.
+
+Same core idea as Folia, implemented from zero rather than as patches over Mojang's code.
+
+---
+
+## Status: what actually works
+
+This is a working server core, not a drop-in replacement for `server.jar`. Be clear on the split
+before you judge it:
+
+**Verified working** (measured, not assumed — see [Benchmarks](#benchmarks)):
+
+- Region-threaded tick engine: regions form, merge, split and retire correctly
+- Global safepoints for every structural change, with no locks on chunk or entity state
+- Full connection lifecycle: handshake → status → login → configuration → play
+- Packet framing, zlib compression, keep-alives, timeouts
+- Async multi-threaded world generation (noise and superflat)
+- Chunk streaming with a ticket-based load/unload lifecycle
+- Chat, movement, per-region metrics, console commands
+- Block breaking and placing, with change broadcasts and sequence acknowledgement
+- Anvil persistence: edits survive unload and restart, and the world opens in external tools
+- Full creative inventory: any of the 952 placeable items can be picked and placed
+
+**Not implemented** — deliberately, and it would be dishonest to imply otherwise:
+
+- **Block behaviour.** No redstone, fluids, random ticks, block entities, or crafting. Blocks can be
+  broken and placed, but nothing reacts: gravel floats, water does not flow.
+- **Mobs, combat, physics.** Players move; nothing else does.
+- **Survival inventories.** Creative picking works and every placeable item places, but there is no
+  container handling, no item pickup, no crafting and no stack accounting — items are infinite and
+  nothing is ever consumed.
+- **Reading arbitrary vanilla worlds** without a `blocks.json` to hand. Worlds are Anvil, but the
+  built-in block table only covers blocks this server itself uses. See
+  [Persistence](#persistence--anvil).
+- **Online mode.** No encryption, no Mojang session check. Startup *fails* if you enable it
+  rather than silently running something insecure. Do not expose this to the internet.
+- **Light engine.** Chunks ship full-bright sky light instead of propagating light.
+- **Plugin API.**
+
+**Verified against a real client** (vanilla 1.21.4 via PrismLauncher) for handshake, status, login
+and configuration; every packet ID in [`Protocol`](src/main/java/dev/quasar/net/Protocol.java) and
+every block state ID in [`Blocks`](src/main/java/dev/quasar/world/block/Blocks.java) now comes from
+Mojang's own generated reports rather than from memory.
+
+Two real bugs were found this way, both worth knowing about because neither is guessable:
+
+1. **Dangling registry reference.** The wolf variants named `minecraft:taiga` while the biome
+   registry contained only `minecraft:plains`. The client resolves cross-registry references when it
+   handles Finish Configuration and aborts with *"Unbound values in registry"*. Any biome named
+   anywhere in [`Registries`](src/main/java/dev/quasar/net/registry/Registries.java) must also be
+   sent by it — hence the single `ONLY_BIOME` constant.
+2. **Colliding packet ID.** `set_default_spawn_position` was `0x5A`; the real value is `0x5B`, and
+   `0x5A` is `set_cursor_item`. The client happily decoded our 12-byte spawn packet as an item stack
+   and died with *"found 11 bytes extra"* — naming a packet we never sent. A wrong ID shows up as a
+   failure in something unrelated, which is exactly why guessing them is a bad idea.
+
+A vanilla 1.21.4 client now joins, renders the world and plays: it sends `player_loaded`, walks and
+looks (the movement packets are handled, not merely tolerated), streams chunks correctly as it
+moves, flies in creative, and disconnects cleanly with every chunk ticket released. Ticks held
+20 TPS throughout.
+
+Breaking and placing blocks work. What the client still sends and this server ignores: `swing`,
+`player_abilities`, and the inventory packets.
+
+---
+
+## Quick start
+
+Requires JDK 21+. Nothing else — the Gradle wrapper is committed.
+
+```bash
+./gradlew fatJar
+```
+
+```bash
+java -jar build/libs/quasar-0.1.0-all.jar
+```
+
+First run writes `quasar.properties` with every setting spelled out. Console commands: `help`,
+`status`, `regions`, `players`, `world`, `mem`, `say <msg>`, `stop`.
+
+---
+
+## How the engine works
+
+### The ownership rule
+
+A region owns a set of chunks and every entity standing in them. While it ticks, its worker thread
+is the **only** thread allowed to read or write that state. There is not a single lock on block data
+or entity fields anywhere in this project — correctness comes entirely from that invariant.
+
+Two things preserve it:
+
+1. **Link radius.** Chunks within 2 of each other are always in the same region, and regions are the
+   connected components of that relation. Nothing a tick does reaches further than that, so a region
+   can never need state another region owns.
+2. **Safepoints.** Region membership only changes when no region is ticking.
+
+Anything that must touch a *different* region posts to that region's mailbox, drained by its owner
+at the top of its next tick. `Region.assertOwned()` turns a violation into an immediate stack trace
+instead of a silent data race.
+
+### No global tick
+
+Each region carries its own deadline and is dispatched to a work-stealing pool when it comes due. A
+single dispatcher thread makes scheduling decisions; workers only execute. A region full of
+expensive work slows down nobody but itself.
+
+### Safepoints
+
+When structural work is queued, the dispatcher stops *starting* ticks and waits for in-flight ones
+to drain. That bounds the pause by the slowest single tick rather than by anything unbounded, and it
+gives the rest of the server a stop-the-world primitive (`RegionScheduler.runAtSafepoint`) for
+chunk unloading, shutdown, and anything else needing a consistent view. Safepoints are rate-limited,
+because chunk loads and unloads are near-continuous while players move and one safepoint per change
+would serialise the whole server.
+
+### Chunk lifecycle
+
+Ticket taken → generated on the world-gen pool → published and adopted by a region at the next
+safepoint → ticket dropped → unloaded at a safepoint. Two failure modes are handled explicitly,
+because both were caught in testing and both are silent when they go wrong:
+
+- A ticket can vanish *while the chunk is still generating* (a player crosses a chunk boundary
+  faster than generation completes). Such chunks are queued for unload on arrival instead of
+  becoming permanently resident with no owner.
+- A region whose last chunk unloads is retired — but any entity still in it is **re-homed** first. A
+  player moving faster than chunks generate can empty their entire old view disc in one batch, and
+  without re-homing they would land in a dead region, stop ticking, and never be seen again.
+
+---
+
+## Benchmarks
+
+Identical workload, same machine (12 cores), only `engine.region-threads` changed. 10 bots scattered
+6000 blocks apart → 10 independent regions, ~2958 chunks loaded, `engine.synthetic-tick-load-micros
+= 8000` so each region tick costs a realistic 8 ms.
+
+| `region-threads` | Slowest region TPS | Per-region MSPT | Peak regions ticking at once |
+|---|---|---|---|
+| 1  | **10.4** | 8.20 | 1 / 1 |
+| 12 | **20.0** | 8.08 | 12 / 12 |
+
+10 regions × 8 ms = 80 ms of work per 50 ms budget. One thread cannot keep up and falls to half
+rate; twelve threads absorb it and hold the 20 TPS ceiling with headroom to spare.
+
+The synthetic load exists because this core implements no block behaviour, so a real tick is nearly
+free — which would make a fast serial loop indistinguishable from true parallelism. `parallel=` and
+`peak=` in the metrics line count regions *actually inside a tick simultaneously*; a peak of 1 means
+the threading bought nothing.
+
+Reproduce:
+
+```bash
+java -cp build/libs/quasar-0.1.0-all.jar dev.quasar.bench.BotSwarm --count 10 --spread 6000 --walk-seconds 10 --seconds 40
+```
+
+The bots start together at spawn and walk apart, which exercises both halves of the region graph:
+one shared region at the start that has to split as they separate. Pass `--teleport true` to jump
+instead.
+
+---
+
+## Configuration
+
+`quasar.properties`, rewritten with all defaults on first run.
+
+| Key | Default | Notes |
+|---|---|---|
+| `server.port` | 25565 | |
+| `server.view-distance` | 8 | Each player's disc is `(2n+1)²` chunks |
+| `server.compression-threshold` | 256 | 0 disables compression |
+| `server.online-mode` | false | **true is rejected at startup** |
+| `world.generator` | noise | `noise` or `flat` |
+| `world.min-y` / `world.height` | -64 / 384 | Must match the dimension registry entry |
+| `engine.region-threads` | cores | Region tick workers |
+| `engine.worldgen-threads` | cores/2 | Chunk generation pool |
+| `engine.metrics-interval-seconds` | 30 | 0 disables the summary line |
+| `engine.synthetic-tick-load-micros` | 0 | Benchmarking only |
+
+---
+
+## Protocol versions
+
+Targets **Minecraft 1.21.4 (protocol 769)**.
+
+Mojang renumbers play-phase packets on almost every release, and those numbers are the single most
+likely thing here to be wrong for your client build. They are all gathered in one file —
+`net/Protocol.java` — so a mismatch is a one-file fix rather than a hunt, and every one can be
+overridden **without recompiling** by dropping a `protocol.properties` next to the jar:
+
+```properties
+play.clientbound.login = 0x2C
+play.clientbound.chunk_data = 0x27
+```
+
+Two other version-sensitive tables:
+
+- `world/block/Blocks.java` — global-palette block state IDs, overridable via `blocks.properties`.
+  Only `AIR` (0) and `STONE` (1) are reliable across versions; the rest are best-effort.
+- `net/registry/Registries.java` — the dimension, biome, damage-type, wolf and painting registries
+  the client demands during configuration. Entry *names* matter more than their contents: a client
+  accepts bland values but not a missing key it expects to resolve.
+
+**Don't hand-write these — generate them.** Mojang's server jar emits the exact tables:
+
+```bash
+java -jar server.jar --reports
+```
+
+- `generated/reports/packets.json` — every packet with its phase, direction and protocol ID
+- `generated/reports/blocks.json` — every block state; use the one flagged `"default": true`
+- `generated/reports/registries.json` — registry contents
+
+It only writes files and exits; no EULA, no server started. Get the jar for a specific version from
+`https://launchermeta.mojang.com/mc/game/version_manifest_v2.json` → the version's metadata URL →
+`downloads.server.url`. These generated files are deliberately gitignored rather than committed.
+
+---
+
+## Layout
+
+```
+engine/     Region, RegionManager, RegionScheduler, TickMetrics — the core
+net/        Netty pipeline, protocol constants, packet listeners per state
+  listener/   Handshake → Status → Login → Configuration → Play
+  registry/   Datapack registries sent during configuration
+world/      Chunk, ChunkSection, World, ticket system, generators
+entity/     Entity, Player
+nbt/        NBT tree model and network serialiser
+bench/      BotSwarm load harness
+```
+
+Sections start *uniform* — one state, no backing array — and only materialise storage on the first
+differing write, so the mostly-air-or-stone sections of a generated world stay cheap.
+
+---
+
+## Next steps, roughly in order of value
+
+1. Entity tracking, so players can see each other.
+2. Placement state: deriving stair facing, log axis and slab half from how the block was clicked.
+3. A light engine.
+
+## Persistence — Anvil
+
+Worlds are written in Mojang's **Anvil** format: `<level-name>/region/r.<rx>.<rz>.mca`, plus a
+`level.dat`. Third-party tools (Amulet, MCA Selector, NBTExplorer) read them, and the folder can be
+dropped into `.minecraft/saves`.
+
+Chunk NBT carries `DataVersion` 4189 — read out of `version.json` in the 1.21.4 client jar
+(`world_version`), not guessed. Block palettes use names and properties from Mojang's `blocks.json`
+report. Section indices are packed `64 / bits` per long without straddling, with
+`bits = max(4, ceil(log2(paletteSize)))`; the floor of four is not optional.
+
+**Only edited chunks are saved.** Generation is deterministic, so an untouched chunk costs nothing to
+store and is simply regenerated — a world stays proportional to what was built, not to where people
+walked. Loading checks disk first, so an edited chunk returns as it was left.
+
+The chunk's NBT is built at a safepoint, where nothing can be mid-tick over it; deflating and writing
+happen on the IO thread. A save therefore costs a pause proportional to how much was edited and none
+proportional to disk speed. Chunks are saved on unload, on a timer
+(`world.autosave-interval-seconds`), on `save` from the console, and on shutdown.
+
+### Exporting a world to open elsewhere
+
+Because only edited chunks are stored, a world opened in Minecraft would otherwise show a handful of
+saved chunks surrounded by whatever vanilla's own generator produces. The console command `saveall`
+writes every currently loaded chunk instead, edited or not, turning the view distance around the
+players online into a world someone else can walk around in:
+
+```
+saveall          # with someone standing where you want the export centred
+stop
+```
+
+Then copy `<level-name>/` into `.minecraft/saves/`. The bot harness can hold that position for you:
+`--stay true` keeps bots wherever the server spawned them rather than scattering.
+
+Heightmaps are recomputed on load rather than trusted from disk — they are a pure function of the
+block data, so deriving them removes any chance of drift. Same for a section's non-air census.
+
+### The block table, and what happens without it
+
+Anvil identifies blocks by name and properties, so a numeric state ID needs translating. A built-in
+table covers every block this server generates or places, which is all that writing its own worlds
+requires.
+
+Reading an *arbitrary* vanilla world needs the whole registry — some 28,000 states, which is Mojang's
+data and is not shipped here. Drop a `blocks.json` from `--reports` next to the jar and the full
+table loads at startup.
+
+Without it, a chunk containing unknown blocks still loads, with those blocks standing in as stone —
+but the chunk is flagged and **never written back**. The same applies to chunks carrying block
+entities or scheduled ticks, which this server cannot represent. Degrading someone's world on disk
+because a lookup table was missing would be far worse than declining to save it.
+
+### Known limits
+
+- Terrain comes from this server's own noise generator, not Mojang's. Chunks it saved load back
+  exactly; anything vanilla generates beyond them follows vanilla's generator and will not line up at
+  the seams.
+- No light data is written, so vanilla relights on load.
+- Only the overworld exists.
+
+## Spawn
+
+Players spawn on dry land, found by walking a coarse grid outward from the origin until a column's
+surface clears sea level. Origin is a poor default — with a noise generator the terrain there is as
+likely as not to sit under water, and spawning submerged makes every attempted placement target
+water instead of air. The search generates no chunks; it only evaluates the generator's height
+function, which is pure noise.
+
+## The creative inventory
+
+Every item in the creative menu can be picked and placed — 1,385 items, 952 of which are blocks.
+
+The server sends none of that. **The creative inventory is built client-side**: the client already
+knows every item and renders the whole menu without asking. All the server has to do is listen. When
+a player picks something the client reports it in `set_creative_mode_slot`, and from then on the only
+question is which block a given item ID places.
+
+Almost always, the one whose name matches — `minecraft:oak_stairs` the item places
+`minecraft:oak_stairs` the block. A handful disagree (`redstone` → `redstone_wire`, `carrot` →
+`carrots`) and are listed in `ItemRegistry.NAME_OVERRIDES`. Items with no block — swords, food —
+place nothing.
+
+Blocks are placed in their **default state**: stairs land unrotated, logs upright, slabs bottom-half.
+Deriving facing, axis and half from where you clicked means reimplementing each block's placement
+logic, which is a much larger job than the mapping itself.
+
+### Data files
+
+`blocks.json` and `registries.json` from `java -jar server.jar --reports` are read from the working
+directory at startup — 27,866 block states and 1,385 items in about 360 ms. They are Mojang's data,
+so they are loaded at runtime rather than committed here.
+
+Without them the server falls back to the nine-block starter hotbar and says so at startup, and
+Anvil support narrows to the blocks this server generates.
+
+## Why the server hands out a hotbar
+
+A client holding nothing does not send `use_item_on` — right-clicking with an empty hand is inert,
+so no amount of server-side logic makes placing work. With no inventory system, nothing would ever
+fill that hand. So on join the server pushes a fixed nine-block hotbar
+([`HotbarKit`](src/main/java/dev/quasar/item/HotbarKit.java)) as one Set Container Content on
+window 0.
+
+The pairing is the important part. Each entry ties an item ID to the block state that item places,
+and item N sits in hotbar slot N while slot N places block N. That way the client's optimistic
+prediction and the server's write agree, so placement neither flickers nor rolls back. A mismatched
+table would reintroduce exactly the desync the pairing exists to prevent.
+
+Both ID spaces come from Mojang's reports — `registries.json` under `minecraft:item` for item IDs,
+`blocks.json` for default block states — and both are overridable in `hotbar.properties` as
+`<name> = <itemId>:<blockState>`.
+
+## Block editing, and why it needs no locks
+
+Breaking and placing land on the owning region's thread and touch nothing else. That falls directly
+out of the engine's invariant rather than from any locking: a player's view disc is always contained
+in a single region, so *every* player who could witness a block change is an entity of the same
+region already running the edit. The broadcast is a plain loop over `region.entities()`.
+
+Placement replaces air *and water*, matching vanilla. Restricting it to air alone meant every
+right-click below sea level was silently refused, which on screen is indistinguishable from a
+placement that never arrived — the block just flashes and vanishes.
+
+Three guards apply before a write, in `Player.isEditAllowed`:
+
+- **Reach** — beyond ~8 blocks the edit is dropped. Without it the packet is a remote world-edit
+  primitive for anyone who can open a socket.
+- **Ownership** — a position outside the region's own chunks belongs to another thread and is
+  refused, which keeps the single-writer rule true by construction rather than by convention.
+- **Build height.**
+
+A rejected edit is still acknowledged, and the authoritative state at that position is re-read and
+sent afterwards, so a refused edit corrects the client rather than leaving its prediction standing.
+
+**Send the ack before the block update, not after.** The client places optimistically and waits on
+its sequence number; the ack retires that prediction and snaps the position back to whatever server
+state it last knew. Sending the update first requires the client to correctly associate an in-flight
+update with a pending prediction, and it does not — placements rolled back to air, while breaks
+appeared to work only because the client predicts a break to air anyway. Acking first and then
+asserting the truth makes the result independent of that association. This is the kind of bug the
+bot harness cannot catch: both orderings look identical from a client that has no prediction logic.
