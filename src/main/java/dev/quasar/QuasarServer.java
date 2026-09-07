@@ -8,6 +8,7 @@ import dev.quasar.engine.RegionScheduler;
 import dev.quasar.entity.Player;
 import dev.quasar.item.HotbarKit;
 import dev.quasar.item.ItemRegistry;
+import dev.quasar.nbt.Nbt;
 import dev.quasar.net.Connection;
 import dev.quasar.net.NettyServer;
 import dev.quasar.net.Protocol;
@@ -20,6 +21,7 @@ import dev.quasar.world.gen.FlatChunkGenerator;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.gen.NoiseChunkGenerator;
 import dev.quasar.world.storage.LevelDat;
+import dev.quasar.world.storage.PlayerDataStorage;
 import dev.quasar.world.storage.RegionStorage;
 
 import java.io.IOException;
@@ -51,6 +53,9 @@ public final class QuasarServer {
     /** World spawn, resolved once at startup rather than per join. */
     private int[] spawn = {0, 64, 0};
 
+    /** Per-player state on disk, or {@code null} when persistence is off. */
+    private final PlayerDataStorage playerData;
+
     public QuasarServer(ServerConfig config) {
         this.config = config;
         this.flatWorld = config.generator.equalsIgnoreCase("flat");
@@ -65,17 +70,20 @@ public final class QuasarServer {
         ItemRegistry.loadIfPresent();
 
         RegionStorage storage = null;
+        PlayerDataStorage players = null;
         if (config.saveEnabled) {
             try {
                 storage = new RegionStorage(Path.of(config.levelName));
+                players = new PlayerDataStorage(Path.of(config.levelName));
             } catch (IOException e) {
                 // Running without persistence is a big enough behaviour change to be loud about,
                 // but it is still better than refusing to start.
                 Log.error("Could not open world storage; running without persistence", e);
             }
         } else {
-            Log.warn("world.save-enabled is false — edits will be lost when chunks unload");
+            Log.warn("world.save-enabled is false — edits and player positions will not persist");
         }
+        this.playerData = players;
 
         this.world = new World(config.levelName, config.seed, config.minY, config.worldHeight,
                 generator, config.worldGenThreads, storage);
@@ -179,9 +187,21 @@ public final class QuasarServer {
         saveWorld(verbose, false);
     }
 
+    /** Snapshots a player to disk. Call from the thread that owns them. */
+    public void savePlayer(Player player) {
+        if (playerData != null) {
+            playerData.saveAsync(player.uuid(), player.toNbt());
+        }
+    }
+
     public void saveWorld(boolean verbose, boolean includeUnedited) {
         try {
             scheduler.runAtSafepoint(() -> {
+                // Players are saved here too: at a safepoint nothing is mid-tick, so their
+                // positions are consistent without reaching into a region thread.
+                for (Player player : players.values()) {
+                    savePlayer(player);
+                }
                 int saved = world.saveAllAtSafepoint(includeUnedited);
                 if (saved > 0 || verbose) {
                     Log.info("Saved %d %schunk(s)", saved, includeUnedited ? "" : "edited ");
@@ -215,6 +235,9 @@ public final class QuasarServer {
         network.shutdown();
         scheduler.shutdown();
         world.shutdown();
+        if (playerData != null) {
+            playerData.close();
+        }
         Log.info("Goodbye.");
     }
 
@@ -266,6 +289,13 @@ public final class QuasarServer {
             return;
         }
 
+        // A returning player picks up where they left off; world spawn is only the fallback.
+        Nbt.NbtCompound saved = playerData == null ? null : playerData.load(uuid);
+        if (saved != null) {
+            player.loadFromNbt(saved);
+            Log.info("%s returning to %.1f, %.1f, %.1f", username, player.x(), player.y(), player.z());
+        }
+
         connection.setState(ProtocolState.PLAY);
         connection.setListener(new PlayListener(this, connection, player));
 
@@ -290,7 +320,7 @@ public final class QuasarServer {
         });
 
         Log.info("%s joined at %.1f, %.1f, %.1f (%d online)",
-                username, spawnX, spawnY, spawnZ, players.size());
+                username, player.x(), player.y(), player.z(), players.size());
         broadcast("§e" + username + " joined the game");
     }
 

@@ -152,7 +152,9 @@ public final class Player extends Entity {
         drainInbound();
         if (!connection.isOpen()) {
             // Cleanup deliberately happens here rather than in the disconnect handler: the ticket
-            // set is region-owned state, and the network thread must not touch it.
+            // set is region-owned state, and the network thread must not touch it. Saving belongs
+            // here for the same reason -- position is only consistent on the owning thread.
+            server.savePlayer(this);
             int held = ticketedChunks.size();
             releaseTickets();
             region.removeEntity(this);
@@ -496,6 +498,21 @@ public final class Player extends Entity {
      * {@code use_item_on}, so right-click is inert no matter what the server would like to do.
      */
     public void sendStarterKit() {
+        // Seed from the kit only for a player with nothing, so a hotbar restored from disk is not
+        // overwritten by the starter set every time they rejoin.
+        boolean empty = true;
+        for (int item : hotbarItems) {
+            if (item > 0) {
+                empty = false;
+                break;
+            }
+        }
+        if (empty) {
+            for (int i = 0; i < HotbarKit.size() && i < hotbarItems.length; i++) {
+                hotbarItems[i] = HotbarKit.ENTRIES.get(i).itemId();
+            }
+        }
+
         connection.send(Protocol.PLAY_CLIENTBOUND_CONTAINER_SET_CONTENT, buf -> {
             ByteBufs.writeVarInt(buf, 0); // window 0: the player inventory
             ByteBufs.writeVarInt(buf, 1); // state ID; nothing here tracks container revisions
@@ -503,10 +520,8 @@ public final class Player extends Entity {
 
             for (int slot = 0; slot < HotbarKit.INVENTORY_SLOTS; slot++) {
                 int hotbarIndex = slot - HotbarKit.FIRST_HOTBAR_SLOT;
-                if (hotbarIndex >= 0 && hotbarIndex < HotbarKit.size()) {
-                    int itemId = HotbarKit.ENTRIES.get(hotbarIndex).itemId();
-                    hotbarItems[hotbarIndex] = itemId;
-                    ByteBufs.writeItemStack(buf, itemId, 64);
+                if (hotbarIndex >= 0 && hotbarIndex < hotbarItems.length && hotbarItems[hotbarIndex] > 0) {
+                    ByteBufs.writeItemStack(buf, hotbarItems[hotbarIndex], 64);
                 } else {
                     ByteBufs.writeEmptyItemStack(buf);
                 }
@@ -623,6 +638,57 @@ public final class Player extends Entity {
     public void disconnect(String reason) {
         connection.sendAndClose(Protocol.PLAY_CLIENTBOUND_DISCONNECT,
                 buf -> Nbt.writeNetwork(buf, Nbt.compound().putString("text", reason)));
+    }
+
+    /**
+     * Snapshots this player for disk.
+     *
+     * <p>Built on the region thread that owns the player, so the values are consistent; only the
+     * finished tree crosses to the IO thread.
+     *
+     * <p>Position and rotation use vanilla's field names and shapes. The hotbar is this server's
+     * own idea and goes under a namespaced key rather than vanilla's {@code Inventory}, which has a
+     * different structure and would be misread.
+     */
+    public Nbt.NbtCompound toNbt() {
+        Nbt.NbtList position = new Nbt.NbtList();
+        position.add(new Nbt.NbtDouble(x));
+        position.add(new Nbt.NbtDouble(y));
+        position.add(new Nbt.NbtDouble(z));
+
+        Nbt.NbtList rotation = new Nbt.NbtList();
+        rotation.add(new Nbt.NbtFloat(yaw));
+        rotation.add(new Nbt.NbtFloat(pitch));
+
+        return Nbt.compound()
+                .put("Pos", position)
+                .put("Rotation", rotation)
+                .putString("Dimension", "minecraft:overworld")
+                .putInt("playerGameType", 1)
+                .put("QuasarHotbar", new Nbt.NbtIntArray(hotbarItems.clone()))
+                .putInt("QuasarHeldSlot", heldSlot);
+    }
+
+    /** Restores position, rotation and hotbar from a previously saved snapshot. */
+    public void loadFromNbt(Nbt.NbtCompound data) {
+        if (data.get("Pos") instanceof Nbt.NbtList position && position.size() == 3
+                && position.items().get(0) instanceof Nbt.NbtDouble px
+                && position.items().get(1) instanceof Nbt.NbtDouble py
+                && position.items().get(2) instanceof Nbt.NbtDouble pz) {
+            setPosition(px.value(), py.value(), pz.value());
+        }
+        if (data.get("Rotation") instanceof Nbt.NbtList rotation && rotation.size() == 2
+                && rotation.items().get(0) instanceof Nbt.NbtFloat ry
+                && rotation.items().get(1) instanceof Nbt.NbtFloat rp) {
+            setRotation(ry.value(), rp.value());
+        }
+        if (data.get("QuasarHotbar") instanceof Nbt.NbtIntArray hotbar) {
+            int[] stored = hotbar.value();
+            System.arraycopy(stored, 0, hotbarItems, 0, Math.min(stored.length, hotbarItems.length));
+        }
+        if (data.get("QuasarHeldSlot") instanceof Nbt.NbtInt slot) {
+            setHeldSlot(slot.value());
+        }
     }
 
     /** Releases every world ticket this player held. Called when they leave. */

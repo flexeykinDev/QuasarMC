@@ -269,6 +269,22 @@ happen on the IO thread. A save therefore costs a pause proportional to how much
 proportional to disk speed. Chunks are saved on unload, on a timer
 (`world.autosave-interval-seconds`), on `save` from the console, and on shutdown.
 
+### Player data
+
+Position, rotation and hotbar are written to `<level-name>/playerdata/<uuid>.dat` as gzipped NBT —
+the same place and encoding a vanilla server uses. Only a subset of vanilla's fields is written;
+anything else it expects is absent and filled with defaults. The hotbar is this server's own idea
+and lives under a namespaced key rather than vanilla's `Inventory`, which has a different structure
+and would be misread.
+
+Saved when a player leaves and on every world save, loaded on join, with world spawn as the fallback
+for someone who has never played. Snapshots are built on the thread that owns the player, so
+positions are consistent, and only the finished NBT crosses to the IO thread.
+
+Writes go through a temporary file and an atomic move. This file is rewritten constantly, and a
+crash midway through a plain write would truncate it and lose the player entirely; a failed move
+just leaves the previous one.
+
 ### Exporting a world to open elsewhere
 
 Because only edited chunks are stored, a world opened in Minecraft would otherwise show a handful of
