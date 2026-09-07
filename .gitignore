@@ -28,3 +28,4 @@ registries-*.json
 *.iml
 .vscode/
 .claude/
+/run-client/

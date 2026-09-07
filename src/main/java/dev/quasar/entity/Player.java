@@ -1069,6 +1069,7 @@ public final class Player extends Entity {
         if (stack.isEmpty()) {
             return;
         }
+        Log.debug("%s dropped %d x item %d", name, stack.count(), stack.itemId());
         server.spawnItem(stack, x, y + 1.2, z, ItemEntity.DEFAULT_PICKUP_DELAY);
     }
 

@@ -565,6 +565,35 @@ Add Entity carries no item stack, so a drop is invisible until its metadata arri
 sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
 partial pickup changes the count.
 
+## Automated real-client testing
+
+[`tools/client-test.ps1`](tools/client-test.ps1) drives a **real vanilla 1.21.4 client** end to end:
+it launches the instance through PrismLauncher, waits for the join, injects real keyboard and mouse
+input, asserts on what the server logged, and reports any decode error the client wrote.
+
+    pwsh -File tools/client-test.ps1
+
+This exists because the bot swarm cannot fail the way a client can. It shares the server's own
+constants and has no prediction logic, so an entire class of bug is invisible to it by construction
+-- it ran green for hours against a world that was completely underwater. Every protocol and
+prediction bug in this project so far was found by a human driving a real client. This automates
+that.
+
+No account is involved: Prism's `--offline` flag invents a throwaway profile, which is all an
+offline-mode server needs, so the launcher's stored session is never touched.
+
+The scenario walks, looks, breaks, places, pick-blocks, drops, opens the inventory and takes an
+in-game screenshot, then checks the server log for each resulting action and scans the client log
+for decode errors and new disconnect reports. It runs on a **superflat** world on purpose: on noise
+terrain the spawn is wherever the generator puts it, and the first run walked into an ocean and
+"broke" water, failing for reasons unrelated to the code under test.
+
+**Limits worth knowing.** Input injection needs the game in the foreground, so a run takes over the
+screen for about a minute. Assertions are only as good as their patterns -- the first version of the
+pick-block check matched `picked up 1 x item 1` from an item entity and passed without a single
+middle-click ever being handled, which is the same false-confidence trap the bot swarm falls into.
+Anchor patterns on something only the code path under test can produce.
+
 ## Block editing, and why it needs no locks
 
 Breaking and placing land on the owning region's thread and touch nothing else. That falls directly
