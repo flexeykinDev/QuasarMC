@@ -11,6 +11,7 @@ import dev.quasar.net.Protocol;
 import dev.quasar.util.Log;
 import dev.quasar.world.Chunk;
 import dev.quasar.world.ChunkPos;
+import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.Blocks;
 import io.netty.buffer.ByteBuf;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -339,7 +340,7 @@ public final class Player extends Entity {
      *
      * @param face 0=-Y 1=+Y 2=-Z 3=+Z 4=-X 5=+X, as the protocol numbers them
      */
-    public void placeBlock(Region region, long packedPos, int face, int sequence) {
+    public void placeBlock(Region region, long packedPos, int face, float cursorY, int sequence) {
         int x = ByteBufs.blockPosX(packedPos);
         int y = ByteBufs.blockPosY(packedPos);
         int z = ByteBufs.blockPosZ(packedPos);
@@ -364,9 +365,11 @@ public final class Player extends Entity {
                 // acknowledgement below still has to go out.
                 Log.trace("%s used a non-placeable item in slot %d", name, heldSlot);
             } else if (Blocks.isReplaceable(existing)) {
-                server.world().setBlock(x, y, z, state);
-                Log.debug("%s placed block %d at %d,%d,%d (slot %d, region #%d)",
-                        name, state, x, y, z, heldSlot, region.id());
+                int placed = BlockPlacement.stateFor(
+                        state, face, cursorY, yaw, Blocks.isWater(existing));
+                server.world().setBlock(x, y, z, placed);
+                Log.debug("%s placed block %d at %d,%d,%d (item state %d, face %d, slot %d, region #%d)",
+                        name, placed, x, y, z, state, face, heldSlot, region.id());
             } else {
                 // Previously silent, which made a refused placement indistinguishable from a
                 // placement that never arrived — both just looked like the block flashing.

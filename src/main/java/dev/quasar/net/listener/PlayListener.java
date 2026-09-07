@@ -104,7 +104,8 @@ public final class PlayListener implements PacketListener {
             long position = data.readLong();
             int face = ByteBufs.readVarInt(data);
             data.readFloat();               // cursor X within the face
-            data.readFloat();               // cursor Y
+            // Cursor Y decides whether a slab or stair lands in the top or bottom half.
+            float cursorY = data.readFloat();
             data.readFloat();               // cursor Z
             data.readBoolean();             // head inside the block
             data.readBoolean();             // world border hit (1.21.3+)
@@ -112,7 +113,7 @@ public final class PlayListener implements PacketListener {
             player.submit(() -> {
                 Region region = player.region();
                 if (region != null) {
-                    player.placeBlock(region, position, face, sequence);
+                    player.placeBlock(region, position, face, cursorY, sequence);
                 }
             });
 

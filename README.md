@@ -244,7 +244,7 @@ differing write, so the mostly-air-or-stone sections of a generated world stay c
 ## Next steps, roughly in order of value
 
 1. Entity tracking, so players can see each other.
-2. Placement state: deriving stair facing, log axis and slab half from how the block was clicked.
+2. Connected shapes: stair corners and fence/wall connections, derived from neighbouring blocks.
 3. A light engine.
 
 ## Persistence — Anvil
@@ -330,9 +330,29 @@ Almost always, the one whose name matches — `minecraft:oak_stairs` the item pl
 `carrots`) and are listed in `ItemRegistry.NAME_OVERRIDES`. Items with no block — swords, food —
 place nothing.
 
-Blocks are placed in their **default state**: stairs land unrotated, logs upright, slabs bottom-half.
-Deriving facing, axis and half from where you clicked means reimplementing each block's placement
-logic, which is a much larger job than the mapping itself.
+### Placement state
+
+Blocks are placed in the state the click implies, not their default one:
+
+| property | derived from | affects |
+|---|---|---|
+| `axis` | the clicked face | logs, pillars, chains |
+| `half` / `type` | clicked face, and cursor height on it | stairs, slabs, trapdoors |
+| `facing` | the player's yaw | stairs, furnaces, observers |
+| `waterlogged` | whether the space held water | anything waterloggable |
+
+Only properties the block's default state actually has are touched, and the adjusted combination is
+looked up by name — if it does not exist, the default is used. That fallback is what makes this safe
+across the whole block set without a per-block table: `type` means top/bottom on a slab but
+single/left/right on a chest, and asking for a chest of type "bottom" simply fails the lookup and
+leaves the chest alone.
+
+Stairs face the way the player looks, so you walk up them going forwards; almost everything else
+faces back towards the player so its front is the side you can see.
+
+Not handled: stair and fence *shapes*, which vanilla derives from neighbouring blocks, so stairs do
+not auto-corner. Blocks whose facing comes from the clicked face rather than the player — wall
+torches, buttons, levers — keep their default state. Slabs do not merge into double slabs.
 
 ### Data files
 
