@@ -247,11 +247,23 @@ differing write, so the mostly-air-or-stone sections of a generated world stay c
 
 ---
 
-## Next steps, roughly in order of value
+## Next steps
 
-1. A light engine, so caves and interiors are not uniformly bright.
-2. Signs, so text can be written and read back.
-3. Persisting item entities, which needs a rule for chunks that are only kept alive by a drop.
+The full plan through to production lives in [ROADMAP.md](ROADMAP.md). Its critical path, in order:
+
+1. **Enforced ownership.** `assertOwned()` exists but is barely called; today the no-locks guarantee
+   rests on review discipline rather than on a check that fails loudly. Cheapest item on the path,
+   and it protects every phase after it.
+2. **A light engine**, so caves and interiors are not uniformly bright — and region-safe, meaning
+   light updates cross a boundary only through a mailbox.
+3. **Block physics**: gravel and sand fall, water and lava flow.
+4. **Basic redstone**, which needs a clear answer to which region owns a component.
+5. **Crafting**, without which survival is impossible.
+6. **Persistence gaps**: item entities across chunk unload, and reading arbitrary vanilla worlds.
+7. **A region-aware plugin and event API**, then basic mobs and combat.
+
+Smaller things worth doing along the way: signs, a safepoint-duration metric, and making
+`LINK_RADIUS` configurable.
 
 ## Persistence — Anvil
 
