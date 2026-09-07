@@ -353,31 +353,63 @@ public final class Player extends Entity {
             return false;
         }
 
-        Chunk chunk = server.world().chunkAt(x >> 4, z >> 4);
-        if (chunk == null) {
-            return false;
+        // A double chest is two blocks presenting one screen. Ordering the halves left-then-right
+        // keeps the slot layout stable regardless of which half was clicked.
+        int[][] blocks;
+        int[] partnerOffset = BlockConnections.chestPartnerOffset(state);
+        if (partnerOffset != null) {
+            int[] self = {x, y, z};
+            int[] partner = {x + partnerOffset[0], y, z + partnerOffset[1]};
+            boolean selfIsLeft = "left".equals(state.properties().get("type"));
+            blocks = selfIsLeft ? new int[][] {self, partner} : new int[][] {partner, self};
+            kind = Containers.largeChest(kind);
+        } else {
+            blocks = new int[][] {{x, y, z}};
         }
-        Nbt.NbtCompound entity = chunk.blockEntity(x & 15, y, z & 15);
-        if (entity == null) {
-            // A container placed before this server tracked block entities, or one vanilla wrote
-            // without contents. Give it an empty one rather than refusing to open it.
-            entity = ContainerIo.newBlockEntity(kind, x, y, z);
-            chunk.setBlockEntity(x & 15, y, z & 15, entity);
+
+        int slotsPerBlock = kind.slots() / blocks.length;
+        ItemStack[] items = new ItemStack[kind.slots()];
+        java.util.Arrays.fill(items, ItemStack.EMPTY);
+
+        for (int i = 0; i < blocks.length; i++) {
+            Nbt.NbtCompound entity = blockEntityFor(kind, blocks[i]);
+            if (entity == null) {
+                return false;
+            }
+            ItemStack[] slice = ContainerIo.readItems(entity, slotsPerBlock);
+            System.arraycopy(slice, 0, items, i * slotsPerBlock, slotsPerBlock);
         }
 
         int windowId = nextWindowId;
         nextWindowId = nextWindowId % 99 + 1;
-        openContainer = new OpenContainer(windowId, kind, x, y, z,
-                ContainerIo.readItems(entity, kind.slots()));
+        Containers.Kind opened = kind;
+        openContainer = new OpenContainer(windowId, opened, blocks, slotsPerBlock, items);
 
         connection.send(Protocol.PLAY_CLIENTBOUND_OPEN_SCREEN, buf -> {
             ByteBufs.writeVarInt(buf, windowId);
-            ByteBufs.writeVarInt(buf, kind.menuType());
-            Nbt.writeNetwork(buf, Nbt.compound().putString("text", kind.title()));
+            ByteBufs.writeVarInt(buf, opened.menuType());
+            Nbt.writeNetwork(buf, Nbt.compound().putString("text", opened.title()));
         });
         sendContainerContent();
-        Log.debug("%s opened %s at %d,%d,%d", name, kind.blockEntityId(), x, y, z);
+        Log.debug("%s opened %s at %d,%d,%d (%d block(s), %d slots)",
+                name, opened.blockEntityId(), x, y, z, blocks.length, opened.slots());
         return true;
+    }
+
+    /** Fetches a container's block entity, creating an empty one if the block has none yet. */
+    private Nbt.NbtCompound blockEntityFor(Containers.Kind kind, int[] position) {
+        Chunk chunk = server.world().chunkAt(position[0] >> 4, position[2] >> 4);
+        if (chunk == null) {
+            return null;
+        }
+        Nbt.NbtCompound entity = chunk.blockEntity(position[0] & 15, position[1], position[2] & 15);
+        if (entity == null) {
+            // A container placed before this server tracked block entities, or one vanilla wrote
+            // without contents. Give it an empty one rather than refusing to open it.
+            entity = ContainerIo.newBlockEntity(kind, position[0], position[1], position[2]);
+            chunk.setBlockEntity(position[0] & 15, position[1], position[2] & 15, entity);
+        }
+        return entity;
     }
 
     /**
@@ -413,10 +445,10 @@ public final class Player extends Entity {
      * the two can never disagree: 27 main slots (inventory 9-35) then the hotbar (36-44).
      */
     private ItemStack windowSlot(OpenContainer container, int slot) {
-        if (slot < container.kind().slots()) {
+        if (slot < container.containerSlots()) {
             return container.get(slot);
         }
-        int playerIndex = slot - container.kind().slots();
+        int playerIndex = slot - container.containerSlots();
         if (playerIndex < 27) {
             return inventorySlot(9 + playerIndex);
         }
@@ -424,11 +456,11 @@ public final class Player extends Entity {
     }
 
     private void setWindowSlot(OpenContainer container, int slot, ItemStack stack) {
-        if (slot < container.kind().slots()) {
+        if (slot < container.containerSlots()) {
             container.set(slot, stack);
             return;
         }
-        int playerIndex = slot - container.kind().slots();
+        int playerIndex = slot - container.containerSlots();
         if (playerIndex < 27) {
             setInventorySlot(9 + playerIndex, stack);
         } else {
@@ -520,9 +552,9 @@ public final class Player extends Entity {
         if (moving.isEmpty()) {
             return;
         }
-        boolean fromContainer = slot < container.kind().slots();
-        int start = fromContainer ? container.kind().slots() : 0;
-        int end = fromContainer ? container.totalSlots() : container.kind().slots();
+        boolean fromContainer = slot < container.containerSlots();
+        int start = fromContainer ? container.containerSlots() : 0;
+        int end = fromContainer ? container.totalSlots() : container.containerSlots();
 
         // Merge into matching stacks first, then fill empty slots, which is what vanilla does.
         for (int target = start; target < end && !moving.isEmpty(); target++) {
@@ -546,18 +578,23 @@ public final class Player extends Entity {
 
     /** Writes the container back into its block entity so the change survives a save. */
     private void persistContainer(OpenContainer container) {
-        Chunk chunk = server.world().chunkAt(container.blockX() >> 4, container.blockZ() >> 4);
-        if (chunk == null) {
-            return;
+        int[][] blocks = container.blocks();
+        for (int i = 0; i < blocks.length; i++) {
+            int[] position = blocks[i];
+            Chunk chunk = server.world().chunkAt(position[0] >> 4, position[2] >> 4);
+            if (chunk == null) {
+                continue;
+            }
+            Nbt.NbtCompound entity =
+                    chunk.blockEntity(position[0] & 15, position[1], position[2] & 15);
+            if (entity == null) {
+                continue;
+            }
+            // Each half of a double chest keeps its own block entity, which is what lets vanilla
+            // read the two chests back independently.
+            ContainerIo.writeItems(entity, container.sliceFor(i));
+            chunk.setBlockEntity(position[0] & 15, position[1], position[2] & 15, entity);
         }
-        Nbt.NbtCompound entity = chunk.blockEntity(
-                container.blockX() & 15, container.blockY(), container.blockZ() & 15);
-        if (entity == null) {
-            return;
-        }
-        ContainerIo.writeItems(entity, container.items());
-        chunk.setBlockEntity(container.blockX() & 15, container.blockY(),
-                container.blockZ() & 15, entity);
     }
 
     /** Closes any open container, keeping whatever was on the cursor. */

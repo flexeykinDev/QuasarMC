@@ -5,26 +5,30 @@ import dev.quasar.item.ItemStack;
 /**
  * A container screen a player currently has open.
  *
- * <p>Holds the container's own slots. The player's inventory is not copied in: window slots past
- * the container map straight onto the player's real inventory, so a click cannot leave the two
- * disagreeing.
+ * <p>Backed by one block, or two for a double chest. The slots of each block are laid end to end,
+ * so a double chest presents 54 slots while each half keeps its own block entity on disk — which is
+ * what lets vanilla read the two chests back independently.
+ *
+ * <p>Holds only the container's own slots. Window slots past those map straight onto the player's
+ * real inventory, so a click cannot leave the two disagreeing.
  */
 public final class OpenContainer {
 
     private final int windowId;
     private final Containers.Kind kind;
-    private final int blockX;
-    private final int blockY;
-    private final int blockZ;
+
+    /** One {x, y, z} per backing block, in the same order as the slots. */
+    private final int[][] blocks;
+
+    private final int slotsPerBlock;
     private final ItemStack[] items;
 
-    public OpenContainer(int windowId, Containers.Kind kind, int blockX, int blockY, int blockZ,
+    public OpenContainer(int windowId, Containers.Kind kind, int[][] blocks, int slotsPerBlock,
                          ItemStack[] items) {
         this.windowId = windowId;
         this.kind = kind;
-        this.blockX = blockX;
-        this.blockY = blockY;
-        this.blockZ = blockZ;
+        this.blocks = blocks;
+        this.slotsPerBlock = slotsPerBlock;
         this.items = items;
     }
 
@@ -36,20 +40,21 @@ public final class OpenContainer {
         return kind;
     }
 
-    public int blockX() {
-        return blockX;
+    public int[][] blocks() {
+        return blocks;
     }
 
-    public int blockY() {
-        return blockY;
-    }
-
-    public int blockZ() {
-        return blockZ;
+    public int slotsPerBlock() {
+        return slotsPerBlock;
     }
 
     public ItemStack[] items() {
         return items;
+    }
+
+    /** Slots belonging to the container itself, across every backing block. */
+    public int containerSlots() {
+        return items.length;
     }
 
     public ItemStack get(int slot) {
@@ -62,8 +67,15 @@ public final class OpenContainer {
         }
     }
 
-    /** Total slots in the window: the container, then the player's 27 main slots and 9 hotbar. */
+    /** The container's slots, then the player's 27 main slots and 9 hotbar. */
     public int totalSlots() {
-        return kind.slots() + 36;
+        return containerSlots() + 36;
+    }
+
+    /** The slice of slots stored in one backing block. */
+    public ItemStack[] sliceFor(int blockIndex) {
+        ItemStack[] slice = new ItemStack[slotsPerBlock];
+        System.arraycopy(items, blockIndex * slotsPerBlock, slice, 0, slotsPerBlock);
+        return slice;
     }
 }

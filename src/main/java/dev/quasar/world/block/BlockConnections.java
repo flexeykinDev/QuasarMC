@@ -36,6 +36,94 @@ public final class BlockConnections {
         };
     }
 
+    /**
+     * Horizontal offset to the other half of a double chest.
+     *
+     * <p>Exposed so the container code opens the right pair without duplicating the geometry: a
+     * {@code left} half's partner sits clockwise of its facing, a {@code right} half's
+     * counter-clockwise.
+     *
+     * @return {x, z} offset, or {@code null} when this chest is not half of a pair
+     */
+    public static int[] chestPartnerOffset(BlockStateRegistry.State chest) {
+        String type = chest.properties().get("type");
+        String facing = chest.properties().get("facing");
+        if (facing == null) {
+            return null;
+        }
+        if ("left".equals(type)) {
+            return offset(clockWise(facing));
+        }
+        if ("right".equals(type)) {
+            return offset(counterClockWise(facing));
+        }
+        return null;
+    }
+
+    private static boolean isChestType(String value) {
+        return "single".equals(value) || "left".equals(value) || "right".equals(value);
+    }
+
+    /**
+     * Pairs adjacent chests into a double chest.
+     *
+     * <p>Vanilla decides this from neighbours, exactly like a fence connection: a chest whose
+     * partner sits clockwise of its facing is the {@code left} half, and one whose partner sits
+     * counter-clockwise is the {@code right} half. Both halves must face the same way.
+     *
+     * <p>The partner must be unpaired or already pointing back. Without that a row of three chests
+     * would have the middle one claimed by both its neighbours, leaving a half whose partner is
+     * paired with something else — a state vanilla never produces and the client renders wrongly.
+     */
+    private static int withChestPairing(BlockAccess blocks, int x, int y, int z,
+                                        BlockStateRegistry.State self) {
+        String facing = self.properties().get("facing");
+        if (facing == null) {
+            return self.id();
+        }
+
+        String type = "single";
+        if (partnerAt(blocks, x, y, z, clockWise(facing), self, "right")) {
+            type = "left";
+        } else if (partnerAt(blocks, x, y, z, counterClockWise(facing), self, "left")) {
+            type = "right";
+        }
+
+        Map<String, String> properties = new LinkedHashMap<>(self.properties());
+        properties.put("type", type);
+        int resolved = BlockStateRegistry.idFor(self.name(), properties);
+        return resolved >= 0 ? resolved : self.id();
+    }
+
+    /**
+     * @param pointingBack the half type the neighbour must already have, if it is not single, for
+     *                     it to count as our partner
+     */
+    private static boolean partnerAt(BlockAccess blocks, int x, int y, int z, String direction,
+                                     BlockStateRegistry.State self, String pointingBack) {
+        int[] delta = offset(direction);
+        BlockStateRegistry.State neighbour =
+                BlockStateRegistry.byId(blocks.getBlock(x + delta[0], y, z + delta[1]));
+        if (neighbour == null || !neighbour.name().equals(self.name())) {
+            return false;
+        }
+        String facing = self.properties().get("facing");
+        if (!facing.equals(neighbour.properties().get("facing"))) {
+            return false;
+        }
+        String neighbourType = neighbour.properties().get("type");
+        return "single".equals(neighbourType) || pointingBack.equals(neighbourType);
+    }
+
+    private static String clockWise(String direction) {
+        return switch (direction) {
+            case "north" -> "east";
+            case "east" -> "south";
+            case "south" -> "west";
+            default -> "north";
+        };
+    }
+
     private static String counterClockWise(String direction) {
         return switch (direction) {
             case "north" -> "west";
@@ -67,6 +155,9 @@ public final class BlockConnections {
 
         if (properties.containsKey("shape") && self.name().endsWith("_stairs")) {
             return withStairShape(blocks, x, y, z, self);
+        }
+        if (self.name().endsWith("chest") && isChestType(properties.get("type"))) {
+            return withChestPairing(blocks, x, y, z, self);
         }
         if (isSideConnectable(properties)) {
             return withSideConnections(blocks, x, y, z, self);

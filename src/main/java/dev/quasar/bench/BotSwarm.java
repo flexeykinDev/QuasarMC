@@ -62,6 +62,7 @@ public final class BotSwarm {
         private volatile boolean inPlay;
         private int nextSequence = 1;
         private volatile int openWindowId = -1;
+        private volatile int openMenuType = -1;
 
         /** Last position sent to the server; block edits must happen within reach of it. */
         private double lastX;
@@ -186,9 +187,10 @@ public final class BotSwarm {
 
             } else if (packetId == Protocol.PLAY_CLIENTBOUND_OPEN_SCREEN) {
                 openWindowId = ByteBufs.readVarInt(data);
-                int menuType = ByteBufs.readVarInt(data);
-                Log.info("[%s] container opened: window %d, menu type %d",
-                        username, openWindowId, menuType);
+                openMenuType = ByteBufs.readVarInt(data);
+                Log.info("[%s] container opened: window %d, menu type %d (%s)",
+                        username, openWindowId, openMenuType,
+                        openMenuType == 5 ? "9x6 large" : openMenuType == 2 ? "9x3" : "other");
 
             } else if (packetId == Protocol.PLAY_CLIENTBOUND_ADD_ENTITY) {
                 int id = ByteBufs.readVarInt(data);
@@ -254,38 +256,52 @@ public final class BotSwarm {
 
             switch (step) {
                 case 0 -> pickCreativeItem(chestItem);
-                case 1 -> send(Protocol.PLAY_SERVERBOUND_USE_ITEM_ON, buf -> {
-                    // Place the container on the block underfoot.
-                    ByteBufs.writeVarInt(buf, 0);
-                    ByteBufs.writeBlockPos(buf, blockX, groundY, blockZ);
-                    ByteBufs.writeVarInt(buf, 1);
-                    buf.writeFloat(0.5f);
-                    buf.writeFloat(1.0f);
-                    buf.writeFloat(0.5f);
-                    buf.writeBoolean(false);
-                    buf.writeBoolean(false);
-                    ByteBufs.writeVarInt(buf, nextSequence++);
-                });
-                case 2 -> pickCreativeItem(1); // stone, so the hotbar has something to deposit
-                case 3 -> send(Protocol.PLAY_SERVERBOUND_USE_ITEM_ON, buf -> {
-                    // Right-click the container itself, which should open it rather than build.
-                    ByteBufs.writeVarInt(buf, 0);
-                    ByteBufs.writeBlockPos(buf, blockX, groundY + 1, blockZ);
-                    ByteBufs.writeVarInt(buf, 1);
-                    buf.writeFloat(0.5f);
-                    buf.writeFloat(1.0f);
-                    buf.writeFloat(0.5f);
-                    buf.writeBoolean(false);
-                    buf.writeBoolean(false);
-                    ByteBufs.writeVarInt(buf, nextSequence++);
-                });
-                // Window slot 54 is the first hotbar slot of a 27-slot container's window.
-                case 4 -> containerClick(54, 0, 0);
-                case 5 -> containerClick(0, 0, 0);
-                case 6 -> send(Protocol.PLAY_SERVERBOUND_CONTAINER_CLOSE,
+                case 1 -> placeAgainstTopOf(blockX, groundY, blockZ);
+                // A second container beside the first, so the pair should present one window.
+                case 2 -> placeAgainstTopOf(blockX + 1, groundY, blockZ);
+                case 3 -> pickCreativeItem(1); // stone, so the hotbar has something to deposit
+                case 4 -> openAt(blockX, groundY + 1, blockZ);
+                // The first hotbar slot sits after the container's own slots and the 27 main ones.
+                case 5 -> containerClick(containerSlotCount() + 27, 0, 0);
+                case 6 -> containerClick(0, 0, 0);
+                case 7 -> send(Protocol.PLAY_SERVERBOUND_CONTAINER_CLOSE,
                         buf -> ByteBufs.writeVarInt(buf, Math.max(openWindowId, 0)));
                 default -> { }
             }
+        }
+
+        /** Slots the open container itself has, inferred from the menu type the server sent. */
+        private int containerSlotCount() {
+            return openMenuType == 5 ? 54 : 27;
+        }
+
+        private void placeAgainstTopOf(int x, int y, int z) {
+            send(Protocol.PLAY_SERVERBOUND_USE_ITEM_ON, buf -> {
+                ByteBufs.writeVarInt(buf, 0);
+                ByteBufs.writeBlockPos(buf, x, y, z);
+                ByteBufs.writeVarInt(buf, 1); // face: +Y
+                buf.writeFloat(0.5f);
+                buf.writeFloat(1.0f);
+                buf.writeFloat(0.5f);
+                buf.writeBoolean(false);
+                buf.writeBoolean(false);
+                ByteBufs.writeVarInt(buf, nextSequence++);
+            });
+        }
+
+        /** Right-clicks a container, which should open it rather than build against it. */
+        private void openAt(int x, int y, int z) {
+            send(Protocol.PLAY_SERVERBOUND_USE_ITEM_ON, buf -> {
+                ByteBufs.writeVarInt(buf, 0);
+                ByteBufs.writeBlockPos(buf, x, y, z);
+                ByteBufs.writeVarInt(buf, 1);
+                buf.writeFloat(0.5f);
+                buf.writeFloat(1.0f);
+                buf.writeFloat(0.5f);
+                buf.writeBoolean(false);
+                buf.writeBoolean(false);
+                ByteBufs.writeVarInt(buf, nextSequence++);
+            });
         }
 
         private void containerClick(int slot, int button, int mode) {

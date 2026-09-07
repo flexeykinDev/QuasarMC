@@ -23,6 +23,7 @@ public final class Containers {
     public record Kind(String blockEntityId, int slots, int menuType, String title) {}
 
     private static final int MENU_GENERIC_9X3 = 2;
+    private static final int MENU_GENERIC_9X6 = 5;
     private static final int MENU_GENERIC_3X3 = 6;
     private static final int MENU_HOPPER = 16;
     private static final int MENU_SHULKER_BOX = 20;
@@ -53,5 +54,11 @@ public final class Containers {
 
     public static boolean isContainer(String blockName) {
         return forBlock(blockName) != null;
+    }
+
+    /** The 54-slot screen a pair of chests presents between them. */
+    public static Kind largeChest(Kind singleChest) {
+        return new Kind(singleChest.blockEntityId(), singleChest.slots() * 2,
+                MENU_GENERIC_9X6, "Large " + singleChest.title());
     }
 }

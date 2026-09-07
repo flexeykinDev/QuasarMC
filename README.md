@@ -382,6 +382,7 @@ that position and its four horizontal neighbours:
 - **fences, glass panes, iron bars** — `north/south/east/west` booleans
 - **walls** — `none/low/tall` per side, plus a raised `up` post unless it is a straight run through
 - **stairs** — `shape`, giving inner and outer corners
+- **chests** — `type`, pairing adjacent chests into a double chest
 
 Stair corners follow vanilla exactly, including the rule that suppresses a corner when the
 neighbour is a stair of the same facing and half, so straight runs stay straight.
@@ -434,6 +435,15 @@ Both ID spaces come from Mojang's reports — `registries.json` under `minecraft
 ## Block entities and containers
 
 Chests, barrels, hoppers, dispensers, droppers and shulker boxes open, hold items and persist.
+
+Two adjacent chests facing the same way pair into a double chest and open as one 54-slot screen. The
+pairing is derived from neighbours like any other connection state: a `left` half's partner sits
+clockwise of its facing, a `right` half's counter-clockwise. A partner must be unpaired or already
+pointing back, so a row of three chests cannot leave a half claimed by both its neighbours — a state
+vanilla never produces and the client renders wrongly.
+
+Each half keeps its own block entity on disk, with the window's slots laid end to end across the
+two. That is what lets vanilla read the two chests back independently.
 
 Block entities are stored per chunk and written into Anvil's `block_entities` list **verbatim**,
 `id` and coordinates included. Storing them untouched is what lets a chunk carrying block entities
