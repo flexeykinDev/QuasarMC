@@ -377,6 +377,16 @@ not; the failure mode is a fence connecting to something decorative it should ha
 Updates stop at the edge of the region that owns the chunk, so a connection there is left stale
 rather than computed by reaching into another thread's state.
 
+### Pick block
+
+Middle-click puts the block you are looking at into the held hotbar slot. Resolved by block *name*,
+so it works on any state — middle-clicking east-facing stairs hands you the stairs item rather than
+failing because only the default state was mapped.
+
+Vanilla in creative hunts for a slot already holding that item and switches to it. With no real
+inventory to search, this overwrites the held slot, which is what a creative player is after: pick,
+then place.
+
 ### Data files
 
 `blocks.json` and `registries.json` from `java -jar server.jar --reports` are read from the working

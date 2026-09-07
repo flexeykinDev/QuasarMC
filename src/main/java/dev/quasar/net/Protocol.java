@@ -98,6 +98,10 @@ public final class Protocol {
     public static final int PLAY_CLIENTBOUND_CONTAINER_SET_CONTENT =
             id("play.clientbound.container_set_content", 0x13);
 
+    /** Sets one slot, which is how a picked block reaches the hotbar. */
+    public static final int PLAY_CLIENTBOUND_CONTAINER_SET_SLOT =
+            id("play.clientbound.container_set_slot", 0x15);
+
     public static final int PLAY_SERVERBOUND_KEEP_ALIVE = id("play.serverbound.keep_alive", 0x1A);
     public static final int PLAY_SERVERBOUND_CHAT = id("play.serverbound.chat", 0x07);
     public static final int PLAY_SERVERBOUND_MOVE_POS = id("play.serverbound.move_pos", 0x1C);
@@ -113,6 +117,10 @@ public final class Protocol {
     /** How a creative client reports picking an item, and how this server learns what you hold. */
     public static final int PLAY_SERVERBOUND_SET_CREATIVE_MODE_SLOT =
             id("play.serverbound.set_creative_mode_slot", 0x36);
+
+    /** Middle-click on a block. The client asks; the server decides what lands in the hotbar. */
+    public static final int PLAY_SERVERBOUND_PICK_ITEM_FROM_BLOCK =
+            id("play.serverbound.pick_item_from_block", 0x22);
 
     /** Documentation aid — every overridable key, in declaration order. */
     public static final String[] KEY_NAMES = {

@@ -74,6 +74,16 @@ public final class PlayListener implements PacketListener {
             int slot = data.readShort();
             player.submit(() -> player.setHeldSlot(slot));
 
+        } else if (packetId == Protocol.PLAY_SERVERBOUND_PICK_ITEM_FROM_BLOCK) {
+            long position = data.readLong();
+            data.readBoolean(); // include block-entity data, which this server has none of
+            player.submit(() -> {
+                Region region = player.region();
+                if (region != null) {
+                    player.pickBlock(region, position);
+                }
+            });
+
         } else if (packetId == Protocol.PLAY_SERVERBOUND_SET_CREATIVE_MODE_SLOT) {
             // Slot, then an item stack. Only the leading count and item ID are needed; the
             // component data that follows is skipped by simply not reading it, since the buffer is

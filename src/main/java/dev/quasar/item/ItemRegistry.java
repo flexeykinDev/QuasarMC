@@ -12,6 +12,7 @@ import java.io.IOException;
 import java.io.Reader;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -52,6 +53,15 @@ public final class ItemRegistry {
     private static final Int2ObjectOpenHashMap<String> NAME_BY_ID = new Int2ObjectOpenHashMap<>();
     private static final Int2IntOpenHashMap BLOCK_BY_ITEM = new Int2IntOpenHashMap();
 
+    /**
+     * Block name to the item that yields it, for pick-block.
+     *
+     * <p>Keyed by name rather than by state, because picking has to work on any state of the block:
+     * middle-clicking east-facing stairs should hand you the stairs item, not fail because the
+     * mapping only knew the default state.
+     */
+    private static final Map<String, Integer> ITEM_BY_BLOCK_NAME = new HashMap<>();
+
     private static boolean loaded;
     private static int placeableCount;
 
@@ -80,6 +90,11 @@ public final class ItemRegistry {
     /** @return the block state this item places, or -1 if it places nothing */
     public static int blockStateForItem(int itemId) {
         return BLOCK_BY_ITEM.get(itemId);
+    }
+
+    /** @return the item that yields this block, or -1 when nothing does */
+    public static int itemForBlockName(String blockName) {
+        return ITEM_BY_BLOCK_NAME.getOrDefault(blockName, -1);
     }
 
     /**
@@ -113,6 +128,7 @@ public final class ItemRegistry {
                 int state = BlockStateRegistry.defaultStateForBlock(blockName);
                 if (state >= 0) {
                     BLOCK_BY_ITEM.put(itemId, state);
+                    ITEM_BY_BLOCK_NAME.putIfAbsent(blockName, itemId);
                     placeableCount++;
                 }
             }

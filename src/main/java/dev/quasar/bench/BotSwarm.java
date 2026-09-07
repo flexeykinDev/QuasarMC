@@ -269,6 +269,11 @@ public final class BotSwarm {
                 buf.writeBoolean(false);
                 ByteBufs.writeVarInt(buf, nextSequence++);
             });
+            // Middle-click the block just placed, the way a creative client asks for it.
+            send(Protocol.PLAY_SERVERBOUND_PICK_ITEM_FROM_BLOCK, buf -> {
+                ByteBufs.writeBlockPos(buf, blockX, groundY + 1, blockZ);
+                buf.writeBoolean(false); // include block-entity data
+            });
             // Break only the upper one, so a placed block survives. A place-then-break pair nets
             // out to no change, which makes it useless for testing that edits persist.
             send(Protocol.PLAY_SERVERBOUND_PLAYER_ACTION, buf -> {

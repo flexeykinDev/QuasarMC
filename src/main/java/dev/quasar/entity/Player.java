@@ -13,6 +13,7 @@ import dev.quasar.world.Chunk;
 import dev.quasar.world.ChunkPos;
 import dev.quasar.world.block.BlockConnections;
 import dev.quasar.world.block.BlockPlacement;
+import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
 import io.netty.buffer.ByteBuf;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
@@ -512,6 +513,46 @@ public final class Player extends Entity {
             }
             ByteBufs.writeEmptyItemStack(buf); // the cursor-carried stack
         });
+    }
+
+    /**
+     * Middle-click: put the block being looked at into the held hotbar slot.
+     *
+     * <p>Looked up by block <em>name</em>, so any state works — picking east-facing stairs hands
+     * you the stairs item rather than failing because only the default state was mapped.
+     *
+     * <p>Vanilla in creative would hunt for a slot that already holds the item and switch to it.
+     * With no real inventory to search, overwriting the held slot is the behaviour that matches
+     * what a creative player expects: middle-click, then place.
+     */
+    public void pickBlock(Region region, long packedPos) {
+        int x = ByteBufs.blockPosX(packedPos);
+        int y = ByteBufs.blockPosY(packedPos);
+        int z = ByteBufs.blockPosZ(packedPos);
+        if (!region.ownsChunk(x >> 4, z >> 4)) {
+            return;
+        }
+
+        int state = server.world().getBlock(x, y, z);
+        BlockStateRegistry.State known = BlockStateRegistry.byId(state);
+        if (known == null || Blocks.isAir(state)) {
+            return;
+        }
+        int itemId = ItemRegistry.itemForBlockName(known.name());
+        if (itemId < 0) {
+            Log.debug("%s picked %s, which has no item", name, known.name());
+            return;
+        }
+
+        hotbarItems[heldSlot] = itemId;
+        int inventorySlot = HotbarKit.FIRST_HOTBAR_SLOT + heldSlot;
+        connection.send(Protocol.PLAY_CLIENTBOUND_CONTAINER_SET_SLOT, buf -> {
+            ByteBufs.writeVarInt(buf, 0); // window 0: the player inventory
+            ByteBufs.writeVarInt(buf, 1); // state ID; nothing here tracks container revisions
+            buf.writeShort(inventorySlot);
+            ByteBufs.writeItemStack(buf, itemId, 1);
+        });
+        Log.debug("%s picked %s (item %d) into slot %d", name, known.name(), itemId, heldSlot);
     }
 
     /** Sends the packets that put the client into the world. */
