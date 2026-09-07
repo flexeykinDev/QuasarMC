@@ -182,6 +182,8 @@ public sealed interface Nbt {
 
         public NbtCompound putBoolean(String key, boolean value) { return putByte(key, value ? 1 : 0); }
 
+        public NbtCompound putShort(String key, int value) { return put(key, new NbtShort((short) value)); }
+
         public NbtCompound putInt(String key, int value) { return put(key, new NbtInt(value)); }
 
         public NbtCompound putLong(String key, long value) { return put(key, new NbtLong(value)); }

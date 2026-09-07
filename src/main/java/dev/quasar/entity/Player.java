@@ -4,6 +4,7 @@ import dev.quasar.QuasarServer;
 import dev.quasar.engine.Region;
 import dev.quasar.item.HotbarKit;
 import dev.quasar.item.ItemRegistry;
+import dev.quasar.item.ItemStack;
 import dev.quasar.nbt.Nbt;
 import dev.quasar.net.ByteBufs;
 import dev.quasar.net.Connection;
@@ -15,6 +16,9 @@ import dev.quasar.world.block.BlockConnections;
 import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
+import dev.quasar.world.blockentity.ContainerIo;
+import dev.quasar.world.blockentity.Containers;
+import dev.quasar.world.blockentity.OpenContainer;
 import io.netty.buffer.ByteBuf;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
@@ -70,12 +74,22 @@ public final class Player extends Entity {
     private int heldSlot;
 
     /**
-     * Item ID in each hotbar slot, as last reported by the client.
+     * The player's inventory: 46 slots in vanilla's layout, of which 9-35 are the main grid and
+     * 36-44 the hotbar.
      *
-     * <p>Seeded from the starter kit and then kept current from {@code set_creative_mode_slot}, so
-     * anything picked out of the creative menu places the right block. 0 means empty.
+     * <p>Seeded from the starter kit, kept current from {@code set_creative_mode_slot}, and now
+     * genuinely authoritative — container clicks move stacks in and out of it.
      */
-    private final int[] hotbarItems = new int[9];
+    private final ItemStack[] inventory = new ItemStack[HotbarKit.INVENTORY_SLOTS];
+
+    /** The stack on the cursor while a container screen is open. */
+    private ItemStack carried = ItemStack.EMPTY;
+
+    /** The container screen this player has open, or {@code null}. */
+    private OpenContainer openContainer;
+
+    /** Window IDs cycle 1-99; 0 is reserved for the player's own inventory. */
+    private int nextWindowId = 1;
 
     public Player(QuasarServer server, Connection connection, String name, UUID uuid,
                   int viewDistance, double x, double y, double z) {
@@ -84,6 +98,21 @@ public final class Player extends Entity {
         this.connection = connection;
         this.name = name;
         this.viewDistance = viewDistance;
+        java.util.Arrays.fill(inventory, ItemStack.EMPTY);
+    }
+
+    private int hotbarSlotIndex() {
+        return HotbarKit.FIRST_HOTBAR_SLOT + heldSlot;
+    }
+
+    public ItemStack inventorySlot(int slot) {
+        return slot >= 0 && slot < inventory.length ? inventory[slot] : ItemStack.EMPTY;
+    }
+
+    public void setInventorySlot(int slot, ItemStack stack) {
+        if (slot >= 0 && slot < inventory.length) {
+            inventory[slot] = stack == null ? ItemStack.EMPTY : stack;
+        }
     }
 
     public String name() {
@@ -118,13 +147,10 @@ public final class Player extends Entity {
      *
      * @param inventorySlot player-inventory index; only the hotbar (36-44) affects placement
      */
-    public void setSlotItem(int inventorySlot, int itemId) {
-        int hotbarIndex = inventorySlot - HotbarKit.FIRST_HOTBAR_SLOT;
-        if (hotbarIndex >= 0 && hotbarIndex < hotbarItems.length) {
-            hotbarItems[hotbarIndex] = itemId;
-            Log.trace("%s put item %d (%s) in hotbar slot %d",
-                    name, itemId, ItemRegistry.nameFor(itemId), hotbarIndex);
-        }
+    public void setSlotItem(int inventorySlot, int itemId, int count) {
+        setInventorySlot(inventorySlot, ItemStack.of(itemId, count));
+        Log.trace("%s put %d x item %d (%s) in slot %d",
+                name, count, itemId, ItemRegistry.nameFor(itemId), inventorySlot);
     }
 
     /**
@@ -133,7 +159,7 @@ public final class Player extends Entity {
      * @return a block state, or -1 when the hand is empty or holding something unplaceable
      */
     private int heldBlockState() {
-        int state = ItemRegistry.blockStateForItem(hotbarItems[heldSlot]);
+        int state = ItemRegistry.blockStateForItem(inventory[hotbarSlotIndex()].itemId());
         if (state >= 0) {
             return state;
         }
@@ -304,6 +330,265 @@ public final class Player extends Entity {
         if (awaitingKeepAlive && id == pendingKeepAliveId) {
             awaitingKeepAlive = false;
             lastKeepAliveResponseAt = System.currentTimeMillis();
+        }
+    }
+
+    // ---------------------------------------------------------------------------- containers
+
+    /**
+     * Opens the container at a position, if there is one.
+     *
+     * @return true when a screen was opened, so the caller knows not to treat the click as a place
+     */
+    public boolean tryOpenContainer(Region region, int x, int y, int z) {
+        if (!region.ownsChunk(x >> 4, z >> 4)) {
+            return false;
+        }
+        BlockStateRegistry.State state = BlockStateRegistry.byId(server.world().getBlock(x, y, z));
+        if (state == null) {
+            return false;
+        }
+        Containers.Kind kind = Containers.forBlock(state.name());
+        if (kind == null) {
+            return false;
+        }
+
+        Chunk chunk = server.world().chunkAt(x >> 4, z >> 4);
+        if (chunk == null) {
+            return false;
+        }
+        Nbt.NbtCompound entity = chunk.blockEntity(x & 15, y, z & 15);
+        if (entity == null) {
+            // A container placed before this server tracked block entities, or one vanilla wrote
+            // without contents. Give it an empty one rather than refusing to open it.
+            entity = ContainerIo.newBlockEntity(kind, x, y, z);
+            chunk.setBlockEntity(x & 15, y, z & 15, entity);
+        }
+
+        int windowId = nextWindowId;
+        nextWindowId = nextWindowId % 99 + 1;
+        openContainer = new OpenContainer(windowId, kind, x, y, z,
+                ContainerIo.readItems(entity, kind.slots()));
+
+        connection.send(Protocol.PLAY_CLIENTBOUND_OPEN_SCREEN, buf -> {
+            ByteBufs.writeVarInt(buf, windowId);
+            ByteBufs.writeVarInt(buf, kind.menuType());
+            Nbt.writeNetwork(buf, Nbt.compound().putString("text", kind.title()));
+        });
+        sendContainerContent();
+        Log.debug("%s opened %s at %d,%d,%d", name, kind.blockEntityId(), x, y, z);
+        return true;
+    }
+
+    /**
+     * Sends the open window's full contents.
+     *
+     * <p>Sent after every click rather than sending per-slot deltas. A container click has a lot of
+     * cases — split stacks, partial merges, shift-move across two areas — and any disagreement
+     * between what the client predicted and what the server did leaves items visibly duplicated or
+     * missing until something else resyncs. A full resync costs a few hundred bytes and makes that
+     * class of bug impossible.
+     */
+    private void sendContainerContent() {
+        OpenContainer container = openContainer;
+        if (container == null) {
+            return;
+        }
+        connection.send(Protocol.PLAY_CLIENTBOUND_CONTAINER_SET_CONTENT, buf -> {
+            ByteBufs.writeVarInt(buf, container.windowId());
+            ByteBufs.writeVarInt(buf, 1);
+            ByteBufs.writeVarInt(buf, container.totalSlots());
+            for (int slot = 0; slot < container.totalSlots(); slot++) {
+                ItemStack stack = windowSlot(container, slot);
+                ByteBufs.writeItemStack(buf, stack.itemId(), stack.count());
+            }
+            ByteBufs.writeItemStack(buf, carried.itemId(), carried.count());
+        });
+    }
+
+    /**
+     * Reads a window slot.
+     *
+     * <p>Slots past the container map onto the player's real inventory rather than onto a copy, so
+     * the two can never disagree: 27 main slots (inventory 9-35) then the hotbar (36-44).
+     */
+    private ItemStack windowSlot(OpenContainer container, int slot) {
+        if (slot < container.kind().slots()) {
+            return container.get(slot);
+        }
+        int playerIndex = slot - container.kind().slots();
+        if (playerIndex < 27) {
+            return inventorySlot(9 + playerIndex);
+        }
+        return inventorySlot(HotbarKit.FIRST_HOTBAR_SLOT + (playerIndex - 27));
+    }
+
+    private void setWindowSlot(OpenContainer container, int slot, ItemStack stack) {
+        if (slot < container.kind().slots()) {
+            container.set(slot, stack);
+            return;
+        }
+        int playerIndex = slot - container.kind().slots();
+        if (playerIndex < 27) {
+            setInventorySlot(9 + playerIndex, stack);
+        } else {
+            setInventorySlot(HotbarKit.FIRST_HOTBAR_SLOT + (playerIndex - 27), stack);
+        }
+    }
+
+    /**
+     * Applies a click in the open window.
+     *
+     * <p>Handles the two modes that account for essentially all use: pick up and place (mode 0) and
+     * shift-move (mode 1). Other modes — number-key swaps, drag-painting, double-click gather — are
+     * ignored and answered with a resync, so an unhandled click does nothing rather than doing
+     * something wrong.
+     */
+    public void handleContainerClick(int windowId, int slot, int button, int mode) {
+        OpenContainer container = openContainer;
+        if (container == null || container.windowId() != windowId) {
+            return;
+        }
+
+        if (slot == -999) {
+            // Clicked outside the window: vanilla drops the stack as an item entity. There are no
+            // item entities here, so the stack would simply vanish -- better to keep it on the
+            // cursor than to silently destroy it.
+            sendContainerContent();
+            return;
+        }
+        if (slot < 0 || slot >= container.totalSlots()) {
+            sendContainerContent();
+            return;
+        }
+
+        switch (mode) {
+            case 0 -> clickPickup(container, slot, button);
+            case 1 -> clickQuickMove(container, slot);
+            default -> { }
+        }
+
+        persistContainer(container);
+        sendContainerContent();
+    }
+
+    private void clickPickup(OpenContainer container, int slot, int button) {
+        ItemStack inSlot = windowSlot(container, slot);
+        boolean rightClick = button == 1;
+
+        if (carried.isEmpty()) {
+            if (inSlot.isEmpty()) {
+                return;
+            }
+            if (rightClick) {
+                int half = (inSlot.count() + 1) / 2; // odd counts favour the cursor, as in vanilla
+                carried = inSlot.withCount(half);
+                setWindowSlot(container, slot, inSlot.shrink(half));
+            } else {
+                carried = inSlot;
+                setWindowSlot(container, slot, ItemStack.EMPTY);
+            }
+            return;
+        }
+
+        if (inSlot.isEmpty()) {
+            int moved = rightClick ? 1 : carried.count();
+            setWindowSlot(container, slot, carried.withCount(moved));
+            carried = carried.shrink(moved);
+            return;
+        }
+
+        if (inSlot.stacksWith(carried)) {
+            int moved = Math.min(rightClick ? 1 : carried.count(), inSlot.spaceLeft());
+            if (moved > 0) {
+                setWindowSlot(container, slot, inSlot.grow(moved));
+                carried = carried.shrink(moved);
+            }
+            return;
+        }
+
+        // Different items: a left click swaps them, a right click does nothing.
+        if (!rightClick) {
+            setWindowSlot(container, slot, carried);
+            carried = inSlot;
+        }
+    }
+
+    /** Shift-click: move the stack to the other half of the window. */
+    private void clickQuickMove(OpenContainer container, int slot) {
+        ItemStack moving = windowSlot(container, slot);
+        if (moving.isEmpty()) {
+            return;
+        }
+        boolean fromContainer = slot < container.kind().slots();
+        int start = fromContainer ? container.kind().slots() : 0;
+        int end = fromContainer ? container.totalSlots() : container.kind().slots();
+
+        // Merge into matching stacks first, then fill empty slots, which is what vanilla does.
+        for (int target = start; target < end && !moving.isEmpty(); target++) {
+            ItemStack existing = windowSlot(container, target);
+            if (existing.stacksWith(moving)) {
+                int moved = Math.min(moving.count(), existing.spaceLeft());
+                if (moved > 0) {
+                    setWindowSlot(container, target, existing.grow(moved));
+                    moving = moving.shrink(moved);
+                }
+            }
+        }
+        for (int target = start; target < end && !moving.isEmpty(); target++) {
+            if (windowSlot(container, target).isEmpty()) {
+                setWindowSlot(container, target, moving);
+                moving = ItemStack.EMPTY;
+            }
+        }
+        setWindowSlot(container, slot, moving);
+    }
+
+    /** Writes the container back into its block entity so the change survives a save. */
+    private void persistContainer(OpenContainer container) {
+        Chunk chunk = server.world().chunkAt(container.blockX() >> 4, container.blockZ() >> 4);
+        if (chunk == null) {
+            return;
+        }
+        Nbt.NbtCompound entity = chunk.blockEntity(
+                container.blockX() & 15, container.blockY(), container.blockZ() & 15);
+        if (entity == null) {
+            return;
+        }
+        ContainerIo.writeItems(entity, container.items());
+        chunk.setBlockEntity(container.blockX() & 15, container.blockY(),
+                container.blockZ() & 15, entity);
+    }
+
+    /** Closes any open container, keeping whatever was on the cursor. */
+    public void closeContainer() {
+        OpenContainer container = openContainer;
+        if (container == null) {
+            return;
+        }
+        persistContainer(container);
+        openContainer = null;
+        if (!carried.isEmpty()) {
+            // Nowhere to drop it, so put it back rather than destroy it.
+            giveOrDrop(carried);
+            carried = ItemStack.EMPTY;
+        }
+        sendInventory();
+    }
+
+    /** Puts a stack anywhere it fits in the inventory. Silently discarded if it does not. */
+    private void giveOrDrop(ItemStack stack) {
+        for (int slot = HotbarKit.FIRST_HOTBAR_SLOT; slot < inventory.length && !stack.isEmpty(); slot++) {
+            if (inventory[slot].isEmpty()) {
+                setInventorySlot(slot, stack);
+                return;
+            }
+        }
+        for (int slot = 9; slot < 36 && !stack.isEmpty(); slot++) {
+            if (inventory[slot].isEmpty()) {
+                setInventorySlot(slot, stack);
+                return;
+            }
         }
     }
 
@@ -508,9 +793,19 @@ public final class Player extends Entity {
      * @param face 0=-Y 1=+Y 2=-Z 3=+Z 4=-X 5=+X, as the protocol numbers them
      */
     public void placeBlock(Region region, long packedPos, int face, float cursorY, int sequence) {
-        int x = ByteBufs.blockPosX(packedPos);
-        int y = ByteBufs.blockPosY(packedPos);
-        int z = ByteBufs.blockPosZ(packedPos);
+        int clickedX = ByteBufs.blockPosX(packedPos);
+        int clickedY = ByteBufs.blockPosY(packedPos);
+        int clickedZ = ByteBufs.blockPosZ(packedPos);
+
+        // Right-clicking a container opens it instead of building against it.
+        if (tryOpenContainer(region, clickedX, clickedY, clickedZ)) {
+            sendBlockChangedAck(sequence);
+            return;
+        }
+
+        int x = clickedX;
+        int y = clickedY;
+        int z = clickedZ;
 
         switch (face) {
             case 0 -> y--;
@@ -535,6 +830,7 @@ public final class Player extends Entity {
                 int placed = BlockPlacement.stateFor(
                         state, face, cursorY, yaw, Blocks.isWater(existing));
                 server.world().setBlock(x, y, z, placed);
+                createBlockEntityIfNeeded(placed, x, y, z);
                 refreshConnections(region, x, y, z);
                 Log.debug("%s placed block %d at %d,%d,%d (item state %d, face %d, slot %d, region #%d)",
                         name, placed, x, y, z, state, face, heldSlot, region.id());
@@ -566,6 +862,28 @@ public final class Player extends Entity {
         sendBlockChangedAck(sequence);
         int authoritative = server.world().getBlock(x, y, z);
         broadcastBlockUpdate(region, x, y, z, authoritative);
+    }
+
+    /**
+     * Attaches an empty block entity when a container is placed.
+     *
+     * <p>Only containers. A chest with no block entity cannot hold anything and vanilla would treat
+     * the file as damaged; other block-entity blocks this server does not model are left bare,
+     * which is the existing behaviour and does not get worse by being explicit about it.
+     */
+    private void createBlockEntityIfNeeded(int state, int x, int y, int z) {
+        BlockStateRegistry.State placed = BlockStateRegistry.byId(state);
+        if (placed == null) {
+            return;
+        }
+        Containers.Kind kind = Containers.forBlock(placed.name());
+        if (kind == null) {
+            return;
+        }
+        Chunk chunk = server.world().chunkAt(x >> 4, z >> 4);
+        if (chunk != null) {
+            chunk.setBlockEntity(x & 15, y, z & 15, ContainerIo.newBlockEntity(kind, x, y, z));
+        }
     }
 
     /** Rejects edits out of reach, outside the build height, or in a chunk this region does not own. */
@@ -660,35 +978,34 @@ public final class Player extends Entity {
      * {@code use_item_on}, so right-click is inert no matter what the server would like to do.
      */
     public void sendStarterKit() {
-        // Seed from the kit only for a player with nothing, so a hotbar restored from disk is not
-        // overwritten by the starter set every time they rejoin.
+        // Seed from the kit only for a player with nothing, so an inventory restored from disk is
+        // not overwritten by the starter set every time they rejoin.
         boolean empty = true;
-        for (int item : hotbarItems) {
-            if (item > 0) {
+        for (ItemStack stack : inventory) {
+            if (!stack.isEmpty()) {
                 empty = false;
                 break;
             }
         }
         if (empty) {
-            for (int i = 0; i < HotbarKit.size() && i < hotbarItems.length; i++) {
-                hotbarItems[i] = HotbarKit.ENTRIES.get(i).itemId();
+            for (int i = 0; i < HotbarKit.size(); i++) {
+                setInventorySlot(HotbarKit.FIRST_HOTBAR_SLOT + i,
+                        ItemStack.of(HotbarKit.ENTRIES.get(i).itemId(), 64));
             }
         }
+        sendInventory();
+    }
 
+    /** Pushes the whole player inventory as window 0. */
+    public void sendInventory() {
         connection.send(Protocol.PLAY_CLIENTBOUND_CONTAINER_SET_CONTENT, buf -> {
             ByteBufs.writeVarInt(buf, 0); // window 0: the player inventory
             ByteBufs.writeVarInt(buf, 1); // state ID; nothing here tracks container revisions
-            ByteBufs.writeVarInt(buf, HotbarKit.INVENTORY_SLOTS);
-
-            for (int slot = 0; slot < HotbarKit.INVENTORY_SLOTS; slot++) {
-                int hotbarIndex = slot - HotbarKit.FIRST_HOTBAR_SLOT;
-                if (hotbarIndex >= 0 && hotbarIndex < hotbarItems.length && hotbarItems[hotbarIndex] > 0) {
-                    ByteBufs.writeItemStack(buf, hotbarItems[hotbarIndex], 64);
-                } else {
-                    ByteBufs.writeEmptyItemStack(buf);
-                }
+            ByteBufs.writeVarInt(buf, inventory.length);
+            for (ItemStack stack : inventory) {
+                ByteBufs.writeItemStack(buf, stack.itemId(), stack.count());
             }
-            ByteBufs.writeEmptyItemStack(buf); // the cursor-carried stack
+            ByteBufs.writeItemStack(buf, carried.itemId(), carried.count());
         });
     }
 
@@ -721,8 +1038,8 @@ public final class Player extends Entity {
             return;
         }
 
-        hotbarItems[heldSlot] = itemId;
-        int inventorySlot = HotbarKit.FIRST_HOTBAR_SLOT + heldSlot;
+        int inventorySlot = hotbarSlotIndex();
+        setInventorySlot(inventorySlot, ItemStack.of(itemId, 1));
         connection.send(Protocol.PLAY_CLIENTBOUND_CONTAINER_SET_SLOT, buf -> {
             ByteBufs.writeVarInt(buf, 0); // window 0: the player inventory
             ByteBufs.writeVarInt(buf, 1); // state ID; nothing here tracks container revisions
@@ -827,8 +1144,28 @@ public final class Player extends Entity {
                 .put("Rotation", rotation)
                 .putString("Dimension", "minecraft:overworld")
                 .putInt("playerGameType", 1)
-                .put("QuasarHotbar", new Nbt.NbtIntArray(hotbarItems.clone()))
+                .put("QuasarInventory", inventoryToNbt())
                 .putInt("QuasarHeldSlot", heldSlot);
+    }
+
+    /** Inventory as a sparse slot list, the same shape a container's {@code Items} uses. */
+    private Nbt.NbtList inventoryToNbt() {
+        Nbt.NbtList list = new Nbt.NbtList(Nbt.TAG_COMPOUND);
+        for (int slot = 0; slot < inventory.length; slot++) {
+            ItemStack stack = inventory[slot];
+            if (stack.isEmpty()) {
+                continue;
+            }
+            String itemName = ItemRegistry.nameFor(stack.itemId());
+            if (itemName == null) {
+                continue;
+            }
+            list.add(Nbt.compound()
+                    .putByte("Slot", slot)
+                    .putString("id", itemName)
+                    .putInt("count", stack.count()));
+        }
+        return list;
     }
 
     /** Restores position, rotation and hotbar from a previously saved snapshot. */
@@ -844,9 +1181,18 @@ public final class Player extends Entity {
                 && rotation.items().get(1) instanceof Nbt.NbtFloat rp) {
             setRotation(ry.value(), rp.value());
         }
-        if (data.get("QuasarHotbar") instanceof Nbt.NbtIntArray hotbar) {
-            int[] stored = hotbar.value();
-            System.arraycopy(stored, 0, hotbarItems, 0, Math.min(stored.length, hotbarItems.length));
+        if (data.get("QuasarInventory") instanceof Nbt.NbtList stored) {
+            for (Nbt element : stored.items()) {
+                if (element instanceof Nbt.NbtCompound entry
+                        && entry.get("Slot") instanceof Nbt.NbtByte slot
+                        && entry.get("id") instanceof Nbt.NbtString itemName) {
+                    int itemId = ItemRegistry.idForName(itemName.value());
+                    int count = entry.get("count") instanceof Nbt.NbtInt c ? c.value() : 1;
+                    if (itemId > 0) {
+                        setInventorySlot(slot.value() & 0xFF, ItemStack.of(itemId, count));
+                    }
+                }
+            }
         }
         if (data.get("QuasarHeldSlot") instanceof Nbt.NbtInt slot) {
             setHeldSlot(slot.value());

@@ -91,7 +91,22 @@ public final class PlayListener implements PacketListener {
             int slot = data.readShort();
             int count = ByteBufs.readVarInt(data);
             int itemId = count > 0 ? ByteBufs.readVarInt(data) : 0;
-            player.submit(() -> player.setSlotItem(slot, itemId));
+            player.submit(() -> player.setSlotItem(slot, itemId, count));
+
+        } else if (packetId == Protocol.PLAY_SERVERBOUND_CONTAINER_CLICK) {
+            // Window, then the client's own state ID, the slot, the button and the mode. The
+            // changed-slot array and cursor stack the client predicts are deliberately not read:
+            // the server recomputes the result and resyncs, so its view always wins.
+            int windowId = ByteBufs.readVarInt(data);
+            ByteBufs.readVarInt(data); // client state ID
+            int slot = data.readShort();
+            int button = data.readByte();
+            int mode = ByteBufs.readVarInt(data);
+            player.submit(() -> player.handleContainerClick(windowId, slot, button, mode));
+
+        } else if (packetId == Protocol.PLAY_SERVERBOUND_CONTAINER_CLOSE) {
+            ByteBufs.readVarInt(data); // window ID
+            player.submit(player::closeContainer);
 
         } else if (packetId == Protocol.PLAY_SERVERBOUND_PLAYER_ACTION) {
             int status = ByteBufs.readVarInt(data);

@@ -27,15 +27,17 @@ before you judge it:
 - Full creative inventory: any of the 952 placeable items can be picked and placed
 - Entity tracking, so players see each other move
 - Player data, so you return where you left off
+- Block entities and working containers, stored in Anvil and preserved even when unmodelled
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
 - **Block behaviour.** No redstone, fluids, random ticks, block entities, or crafting. Blocks can be
   broken and placed, but nothing reacts: gravel floats, water does not flow.
 - **Mobs, combat, physics.** Players move; nothing else does.
-- **Survival inventories.** Creative picking works and every placeable item places, but there is no
-  container handling, no item pickup, no crafting and no stack accounting — items are infinite and
-  nothing is ever consumed.
+- **Survival mechanics.** Containers work and the inventory is real, but there is no item pickup, no
+  crafting, no item entities and no stack accounting on placement — creative items are infinite and
+  placing never consumes one.
+- **Furnaces, brewing stands, enchanting tables.** Containers with processing logic, not just slots.
 - **Reading arbitrary vanilla worlds** without a `blocks.json` to hand. Worlds are Anvil, but the
   built-in block table only covers blocks this server itself uses. See
   [Persistence](#persistence--anvil).
@@ -245,11 +247,9 @@ differing write, so the mostly-air-or-stone sections of a generated world stay c
 
 ## Next steps, roughly in order of value
 
-1. Pick block, so middle-click selects what you are looking at.
-2. Player data, so you return where you left off.
-3. Entity tracking, so players can see each other.
-4. Block entities, so chests and signs hold their contents.
-5. A light engine.
+1. A light engine, so caves and interiors are not uniformly bright.
+2. Item entities, so broken blocks drop and dropped stacks land on the ground.
+3. Signs, so text can be written and read back.
 
 ## Persistence — Anvil
 
@@ -430,6 +430,48 @@ table would reintroduce exactly the desync the pairing exists to prevent.
 Both ID spaces come from Mojang's reports — `registries.json` under `minecraft:item` for item IDs,
 `blocks.json` for default block states — and both are overridable in `hotbar.properties` as
 `<name> = <itemId>:<blockState>`.
+
+## Block entities and containers
+
+Chests, barrels, hoppers, dispensers, droppers and shulker boxes open, hold items and persist.
+
+Block entities are stored per chunk and written into Anvil's `block_entities` list **verbatim**,
+`id` and coordinates included. Storing them untouched is what lets a chunk carrying block entities
+this server does not model — spawners, signs, beehives — be loaded, held and written back unchanged
+rather than dropped. That is also why chunks with block entities are no longer loaded read-only;
+only scheduled ticks still block a save, because nothing here can run them and writing the chunk
+back without them would quietly cancel whatever they were going to do.
+
+A block entity is discarded when its block is replaced, compared by block *name* rather than state:
+a chest gaining a connection changes state without becoming a different block, and dropping its
+contents for that would be a data-loss bug.
+
+Which blocks are containers is a curated table. Nothing in the generated reports says which blocks
+have a block entity, let alone how many slots it has. Furnaces, brewing stands and enchanting tables
+are deliberately absent — their screens have fuel, progress and result slots whose behaviour is not
+just "move items around", and a half-implemented furnace would be worse than none.
+
+### Clicks
+
+Window slots past the container map onto the player's real inventory rather than onto a copy, so
+the two cannot disagree. Two click modes are handled: pick up and place (including right-click for
+half-stacks and single items) and shift-move, which merges into matching stacks before filling
+empty ones, as vanilla does. Other modes — number-key swaps, drag-painting, double-click gather —
+are ignored and answered with a resync, so an unhandled click does nothing rather than something
+wrong.
+
+**The whole window is re-sent after every click** rather than sending per-slot deltas. Container
+clicks have a lot of cases, and any disagreement between what the client predicted and what the
+server did leaves items visibly duplicated or missing until something else resyncs. A full resync
+costs a few hundred bytes and makes that class of bug impossible.
+
+Clicking outside the window keeps the stack on the cursor instead of dropping it: there are no item
+entities here, so a "drop" would silently destroy it. Closing a container with something on the
+cursor puts it back in the inventory for the same reason.
+
+Item stacks carry an ID and a count and nothing else. Enchantments, damage and custom names are
+component data this server does not model, and pretending to would mean dropping them on the first
+click.
 
 ## Entity tracking
 

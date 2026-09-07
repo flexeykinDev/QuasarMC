@@ -62,6 +62,9 @@ public final class ItemRegistry {
      */
     private static final Map<String, Integer> ITEM_BY_BLOCK_NAME = new HashMap<>();
 
+    /** Item name to numeric ID. Needed because item NBT stores names, while the protocol uses IDs. */
+    private static final Map<String, Integer> ID_BY_NAME = new HashMap<>();
+
     private static boolean loaded;
     private static int placeableCount;
 
@@ -90,6 +93,11 @@ public final class ItemRegistry {
     /** @return the block state this item places, or -1 if it places nothing */
     public static int blockStateForItem(int itemId) {
         return BLOCK_BY_ITEM.get(itemId);
+    }
+
+    /** @return the numeric ID for an item name, or -1 when unknown */
+    public static int idForName(String itemName) {
+        return ID_BY_NAME.getOrDefault(itemName, -1);
     }
 
     /** @return the item that yields this block, or -1 when nothing does */
@@ -123,6 +131,7 @@ public final class ItemRegistry {
                 String itemName = entry.getKey();
                 int itemId = entry.getValue().getAsJsonObject().get("protocol_id").getAsInt();
                 NAME_BY_ID.put(itemId, itemName);
+                ID_BY_NAME.put(itemName, itemId);
 
                 String blockName = NAME_OVERRIDES.getOrDefault(itemName, itemName);
                 int state = BlockStateRegistry.defaultStateForBlock(blockName);

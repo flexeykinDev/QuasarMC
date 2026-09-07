@@ -102,6 +102,13 @@ public final class Protocol {
     public static final int PLAY_CLIENTBOUND_CONTAINER_SET_SLOT =
             id("play.clientbound.container_set_slot", 0x15);
 
+    public static final int PLAY_CLIENTBOUND_OPEN_SCREEN = id("play.clientbound.open_screen", 0x35);
+
+    public static final int PLAY_SERVERBOUND_CONTAINER_CLICK =
+            id("play.serverbound.container_click", 0x10);
+    public static final int PLAY_SERVERBOUND_CONTAINER_CLOSE =
+            id("play.serverbound.container_close", 0x11);
+
     // Entity tracking: what makes other players visible.
     public static final int PLAY_CLIENTBOUND_ADD_ENTITY = id("play.clientbound.add_entity", 0x01);
     public static final int PLAY_CLIENTBOUND_REMOVE_ENTITIES = id("play.clientbound.remove_entities", 0x47);

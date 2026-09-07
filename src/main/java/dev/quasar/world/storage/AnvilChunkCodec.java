@@ -60,7 +60,7 @@ public final class AnvilChunkCodec {
                 .putLong("LastUpdate", 0L)
                 .putLong("InhabitedTime", 0L)
                 .put("sections", sections)
-                .put("block_entities", new Nbt.NbtList(Nbt.TAG_COMPOUND))
+                .put("block_entities", blockEntitiesToNbt(chunk))
                 .put("Heightmaps", heightmaps)
                 .put("block_ticks", new Nbt.NbtList(Nbt.TAG_COMPOUND))
                 .put("fluid_ticks", new Nbt.NbtList(Nbt.TAG_COMPOUND))
@@ -68,6 +68,14 @@ public final class AnvilChunkCodec {
                 .put("structures", Nbt.compound()
                         .put("References", Nbt.compound())
                         .put("starts", Nbt.compound()));
+    }
+
+    private static Nbt.NbtList blockEntitiesToNbt(Chunk chunk) {
+        Nbt.NbtList list = new Nbt.NbtList(Nbt.TAG_COMPOUND);
+        for (Nbt.NbtCompound entity : chunk.blockEntities()) {
+            list.add(entity);
+        }
+        return list;
     }
 
     private static Nbt.NbtCompound sectionToNbt(ChunkSection section, int sectionY) {
@@ -165,16 +173,18 @@ public final class AnvilChunkCodec {
             }
         }
 
-        // Anything this server cannot represent must not be silently destroyed by a later rewrite.
-        if (hasEntries(root.get("block_entities"))
-                || hasEntries(root.get("block_ticks"))
-                || hasEntries(root.get("fluid_ticks"))) {
+        // Block entities are kept verbatim, so they survive a rewrite untouched even when this
+        // server has no idea what they are.
+        readBlockEntities(chunk, root, minY);
+
+        // Scheduled ticks are a different matter: nothing here can run them, and writing the chunk
+        // back without them would quietly cancel whatever they were going to do.
+        if (hasEntries(root.get("block_ticks")) || hasEntries(root.get("fluid_ticks"))) {
             lossy = true;
             if (!warnedAboutDroppedData) {
                 warnedAboutDroppedData = true;
-                Log.warn("Chunk %d,%d carries block entities or scheduled ticks, which this server "
-                        + "cannot represent; it is loaded read-only and will not be overwritten.",
-                        expectedX, expectedZ);
+                Log.warn("Chunk %d,%d carries scheduled ticks, which this server cannot run; it is "
+                        + "loaded read-only and will not be overwritten.", expectedX, expectedZ);
             }
         }
 
@@ -184,6 +194,31 @@ public final class AnvilChunkCodec {
             chunk.blockSaving();
         }
         return chunk;
+    }
+
+    /**
+     * Loads block entities, keyed by the absolute coordinates they carry.
+     *
+     * <p>Each compound is stored exactly as read, so one this server does not model round-trips
+     * unchanged rather than being dropped on the next save.
+     */
+    private static void readBlockEntities(Chunk chunk, Nbt.NbtCompound root, int minY) {
+        if (!(root.get("block_entities") instanceof Nbt.NbtList list)) {
+            return;
+        }
+        for (Nbt element : list.items()) {
+            if (!(element instanceof Nbt.NbtCompound entity)) {
+                continue;
+            }
+            Integer x = intValue(entity.get("x"));
+            Integer y = intValue(entity.get("y"));
+            Integer z = intValue(entity.get("z"));
+            if (x == null || y == null || z == null || y < minY || y > chunk.maxY()) {
+                continue;
+            }
+            chunk.setBlockEntity(x & 15, y, z & 15, entity);
+        }
+        chunk.clearDirty();
     }
 
     /** @return true if anything in this section could not be mapped */

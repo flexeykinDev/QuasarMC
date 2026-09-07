@@ -61,6 +61,7 @@ public final class BotSwarm {
         private Channel channel;
         private volatile boolean inPlay;
         private int nextSequence = 1;
+        private volatile int openWindowId = -1;
 
         /** Last position sent to the server; block edits must happen within reach of it. */
         private double lastX;
@@ -183,6 +184,12 @@ public final class BotSwarm {
                 blockAcks.incrementAndGet();
                 Log.info("[%s] block_changed_ack seq %d", username, sequence);
 
+            } else if (packetId == Protocol.PLAY_CLIENTBOUND_OPEN_SCREEN) {
+                openWindowId = ByteBufs.readVarInt(data);
+                int menuType = ByteBufs.readVarInt(data);
+                Log.info("[%s] container opened: window %d, menu type %d",
+                        username, openWindowId, menuType);
+
             } else if (packetId == Protocol.PLAY_CLIENTBOUND_ADD_ENTITY) {
                 int id = ByteBufs.readVarInt(data);
                 ByteBufs.readUuid(data);
@@ -230,6 +237,71 @@ public final class BotSwarm {
             double angle = (tick % 360) * Math.PI / 180.0;
             moveTo(targetX * progress + Math.cos(angle) * 24, 80,
                     targetZ * progress + Math.sin(angle) * 24);
+        }
+
+        /**
+         * Places a container, opens it, moves a stack in and closes it.
+         *
+         * <p>Driven by a step counter from the main loop rather than by timers, so each stage
+         * happens in order with the server's replies in between.
+         *
+         * @param chestItem the container item to place
+         */
+        void chestStep(int step, int chestItem) {
+            int blockX = (int) Math.floor(lastX);
+            int blockZ = (int) Math.floor(lastZ);
+            int groundY = (int) Math.floor(lastY) - 1;
+
+            switch (step) {
+                case 0 -> pickCreativeItem(chestItem);
+                case 1 -> send(Protocol.PLAY_SERVERBOUND_USE_ITEM_ON, buf -> {
+                    // Place the container on the block underfoot.
+                    ByteBufs.writeVarInt(buf, 0);
+                    ByteBufs.writeBlockPos(buf, blockX, groundY, blockZ);
+                    ByteBufs.writeVarInt(buf, 1);
+                    buf.writeFloat(0.5f);
+                    buf.writeFloat(1.0f);
+                    buf.writeFloat(0.5f);
+                    buf.writeBoolean(false);
+                    buf.writeBoolean(false);
+                    ByteBufs.writeVarInt(buf, nextSequence++);
+                });
+                case 2 -> pickCreativeItem(1); // stone, so the hotbar has something to deposit
+                case 3 -> send(Protocol.PLAY_SERVERBOUND_USE_ITEM_ON, buf -> {
+                    // Right-click the container itself, which should open it rather than build.
+                    ByteBufs.writeVarInt(buf, 0);
+                    ByteBufs.writeBlockPos(buf, blockX, groundY + 1, blockZ);
+                    ByteBufs.writeVarInt(buf, 1);
+                    buf.writeFloat(0.5f);
+                    buf.writeFloat(1.0f);
+                    buf.writeFloat(0.5f);
+                    buf.writeBoolean(false);
+                    buf.writeBoolean(false);
+                    ByteBufs.writeVarInt(buf, nextSequence++);
+                });
+                // Window slot 54 is the first hotbar slot of a 27-slot container's window.
+                case 4 -> containerClick(54, 0, 0);
+                case 5 -> containerClick(0, 0, 0);
+                case 6 -> send(Protocol.PLAY_SERVERBOUND_CONTAINER_CLOSE,
+                        buf -> ByteBufs.writeVarInt(buf, Math.max(openWindowId, 0)));
+                default -> { }
+            }
+        }
+
+        private void containerClick(int slot, int button, int mode) {
+            if (openWindowId < 0) {
+                Log.warn("[%s] click with no window open", username);
+                return;
+            }
+            send(Protocol.PLAY_SERVERBOUND_CONTAINER_CLICK, buf -> {
+                ByteBufs.writeVarInt(buf, openWindowId);
+                ByteBufs.writeVarInt(buf, 0);   // client state ID
+                buf.writeShort(slot);
+                buf.writeByte(button);
+                ByteBufs.writeVarInt(buf, mode);
+                ByteBufs.writeVarInt(buf, 0);   // no predicted slot changes
+                ByteBufs.writeVarInt(buf, 0);   // empty carried stack
+            });
         }
 
         /** Jumps straight to the scatter target, skipping the gradual walk. */
@@ -330,6 +402,8 @@ public final class BotSwarm {
         boolean stay = Boolean.parseBoolean(arg(args, "--stay", "false"));
         // --item <id> makes bots pick that item from the creative menu before each edit.
         int creativeItem = Integer.parseInt(arg(args, "--item", "0"));
+        // --chest <itemId> runs the container sequence instead of the block-edit loop.
+        int chestItem = Integer.parseInt(arg(args, "--chest", "0"));
 
         Log.info("Connecting %d bots to %s:%d, scattering over %d blocks (%s) for %ds",
                 count, host, port, spread,
@@ -385,6 +459,13 @@ public final class BotSwarm {
                         : Math.min(1.0, (System.currentTimeMillis() - start) / (double) (walkMillis));
                 for (Bot bot : bots) {
                     if (bot.isInPlay()) {
+                        if (chestItem > 0) {
+                            // One step every half second, so each stage sees the previous reply.
+                            if (tick % 10 == 0) {
+                                bot.chestStep((int) (tick / 10), chestItem);
+                            }
+                            continue;
+                        }
                         if (!stay) {
                             bot.advance(progress, tick);
                         }

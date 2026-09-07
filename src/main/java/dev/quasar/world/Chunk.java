@@ -2,8 +2,10 @@ package dev.quasar.world;
 
 import dev.quasar.nbt.Nbt;
 import dev.quasar.net.ByteBufs;
+import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
 import io.netty.buffer.ByteBuf;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 
 /**
  * A 16×16 column of {@link ChunkSection}s.
@@ -20,6 +22,16 @@ public final class Chunk {
 
     /** MOTION_BLOCKING heightmap, stored as height above {@link #minY}. */
     private final short[] heightmap = new short[256];
+
+    /**
+     * Block entities, keyed by position within the chunk.
+     *
+     * <p>Compounds are stored exactly as they appear on disk, {@code id} and coordinates included.
+     * Storing them verbatim is what lets a chunk carrying block entities this server does not model
+     * — spawners, signs, beehives — be loaded, held and written back unchanged instead of being
+     * dropped.
+     */
+    private final Int2ObjectOpenHashMap<Nbt.NbtCompound> blockEntities = new Int2ObjectOpenHashMap<>();
 
     /** Set when block data changed since the last save. */
     private boolean dirty;
@@ -85,7 +97,59 @@ public final class Chunk {
         if (previous != state) {
             dirty = true;
             updateHeightmapAfterSet(localX, y, localZ, state);
+            discardBlockEntityIfBlockChanged(localX, y, localZ, previous, state);
         }
+    }
+
+    /**
+     * Drops a block entity when the block itself is replaced.
+     *
+     * <p>Compares block <em>names</em>, not states: a chest gaining a connection or a barrel being
+     * opened changes state without becoming a different block, and dropping its contents for that
+     * would be a data-loss bug.
+     */
+    private void discardBlockEntityIfBlockChanged(int localX, int y, int localZ,
+                                                  int previous, int state) {
+        int key = blockEntityKey(localX, y, localZ);
+        if (!blockEntities.containsKey(key)) {
+            return;
+        }
+        BlockStateRegistry.State before = BlockStateRegistry.byId(previous);
+        BlockStateRegistry.State after = BlockStateRegistry.byId(state);
+        String beforeName = before == null ? null : before.name();
+        String afterName = after == null ? null : after.name();
+        if (beforeName == null || !beforeName.equals(afterName)) {
+            blockEntities.remove(key);
+        }
+    }
+
+    private int blockEntityKey(int localX, int y, int localZ) {
+        return ((y - minY) << 8) | (localZ << 4) | localX;
+    }
+
+    /** @return the block entity at this position, or {@code null} */
+    public Nbt.NbtCompound blockEntity(int localX, int y, int localZ) {
+        return blockEntities.get(blockEntityKey(localX, y, localZ));
+    }
+
+    public void setBlockEntity(int localX, int y, int localZ, Nbt.NbtCompound data) {
+        blockEntities.put(blockEntityKey(localX, y, localZ), data);
+        dirty = true;
+    }
+
+    public void removeBlockEntity(int localX, int y, int localZ) {
+        if (blockEntities.remove(blockEntityKey(localX, y, localZ)) != null) {
+            dirty = true;
+        }
+    }
+
+    /** Every block entity in this chunk, for serialisation. */
+    public Iterable<Nbt.NbtCompound> blockEntities() {
+        return blockEntities.values();
+    }
+
+    public int blockEntityCount() {
+        return blockEntities.size();
     }
 
     private void updateHeightmapAfterSet(int localX, int y, int localZ, int state) {
