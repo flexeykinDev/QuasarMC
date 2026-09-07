@@ -401,7 +401,8 @@ public final class BotSwarm {
         // is to hold the chunks around spawn loaded rather than to scatter across the world.
         boolean stay = Boolean.parseBoolean(arg(args, "--stay", "false"));
         // --item <id> makes bots pick that item from the creative menu before each edit.
-        int creativeItem = Integer.parseInt(arg(args, "--item", "0"));
+        // -1 means "leave the starter kit alone"; 0 is a valid request for an empty hand.
+        int creativeItem = Integer.parseInt(arg(args, "--item", "-1"));
         // --chest <itemId> runs the container sequence instead of the block-edit loop.
         int chestItem = Integer.parseInt(arg(args, "--chest", "0"));
 
@@ -473,7 +474,7 @@ public final class BotSwarm {
                         // Edits wait until the walk is done so they land at the destination —
                         // except in stay mode, where there is no walk to wait for.
                         if ((stay || progress >= 1.0) && tick % 40 == 0) {
-                            if (creativeItem > 0) {
+                            if (creativeItem >= 0) {
                                 bot.pickCreativeItem(creativeItem);
                             }
                             bot.editBlocks();

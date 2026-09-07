@@ -832,8 +832,11 @@ public final class Player extends Entity {
                 server.world().setBlock(x, y, z, placed);
                 createBlockEntityIfNeeded(placed, x, y, z);
                 refreshConnections(region, x, y, z);
+                // Read back rather than logging `placed`: connection updates run after the write,
+                // so the value set a moment ago is not necessarily what ended up there.
                 Log.debug("%s placed block %d at %d,%d,%d (item state %d, face %d, slot %d, region #%d)",
-                        name, placed, x, y, z, state, face, heldSlot, region.id());
+                        name, server.world().getBlock(x, y, z), x, y, z, state, face, heldSlot,
+                        region.id());
             } else {
                 // Previously silent, which made a refused placement indistinguishable from a
                 // placement that never arrived — both just looked like the block flashing.

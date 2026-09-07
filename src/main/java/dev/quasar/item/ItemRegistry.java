@@ -135,7 +135,10 @@ public final class ItemRegistry {
 
                 String blockName = NAME_OVERRIDES.getOrDefault(itemName, itemName);
                 int state = BlockStateRegistry.defaultStateForBlock(blockName);
-                if (state >= 0) {
+                // Strictly greater than zero, not merely present. Air is item 0 and block state 0,
+                // and an empty inventory slot is also item 0 -- so accepting state 0 made an empty
+                // hand "place air", which silently deleted any replaceable block it was aimed at.
+                if (state > 0) {
                     BLOCK_BY_ITEM.put(itemId, state);
                     ITEM_BY_BLOCK_NAME.putIfAbsent(blockName, itemId);
                     placeableCount++;
