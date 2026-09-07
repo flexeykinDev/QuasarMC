@@ -53,6 +53,9 @@ public final class BotSwarm {
         private final AtomicInteger chunksReceived = new AtomicInteger();
         private final AtomicInteger blockUpdates = new AtomicInteger();
         private final AtomicInteger blockAcks = new AtomicInteger();
+        private final AtomicInteger entitiesSpawned = new AtomicInteger();
+        private final AtomicInteger entitiesRemoved = new AtomicInteger();
+        private final AtomicInteger entityMoves = new AtomicInteger();
 
         private ProtocolState state = ProtocolState.LOGIN;
         private Channel channel;
@@ -179,6 +182,25 @@ public final class BotSwarm {
                 int sequence = ByteBufs.readVarInt(data);
                 blockAcks.incrementAndGet();
                 Log.info("[%s] block_changed_ack seq %d", username, sequence);
+
+            } else if (packetId == Protocol.PLAY_CLIENTBOUND_ADD_ENTITY) {
+                int id = ByteBufs.readVarInt(data);
+                ByteBufs.readUuid(data);
+                int type = ByteBufs.readVarInt(data);
+                double ex = data.readDouble();
+                double ey = data.readDouble();
+                double ez = data.readDouble();
+                entitiesSpawned.incrementAndGet();
+                Log.info("[%s] sees entity %d (type %d) at %.1f, %.1f, %.1f",
+                        username, id, type, ex, ey, ez);
+
+            } else if (packetId == Protocol.PLAY_CLIENTBOUND_MOVE_ENTITY_POS_ROT) {
+                entityMoves.incrementAndGet();
+
+            } else if (packetId == Protocol.PLAY_CLIENTBOUND_REMOVE_ENTITIES) {
+                int count = ByteBufs.readVarInt(data);
+                entitiesRemoved.addAndGet(count);
+                Log.info("[%s] loses sight of %d entity/entities", username, count);
 
             } else if (packetId == Protocol.PLAY_CLIENTBOUND_DISCONNECT) {
                 Log.warn("[%s] disconnected during play", username);
@@ -389,8 +411,18 @@ public final class BotSwarm {
                     live++;
                 }
             }
+            int spawned = 0;
+            int removed = 0;
+            int moves = 0;
+            for (Bot bot : bots) {
+                spawned += bot.entitiesSpawned.get();
+                removed += bot.entitiesRemoved.get();
+                moves += bot.entityMoves.get();
+            }
             Log.info("Done: %d/%d bots still in play, %d chunk packets received in total",
                     live, count, totalChunks);
+            Log.info("Entity tracking: %d spawn(s), %d move(s), %d removal(s)",
+                    spawned, moves, removed);
         } finally {
             group.shutdownGracefully().await(5, TimeUnit.SECONDS);
         }

@@ -102,6 +102,20 @@ public final class Protocol {
     public static final int PLAY_CLIENTBOUND_CONTAINER_SET_SLOT =
             id("play.clientbound.container_set_slot", 0x15);
 
+    // Entity tracking: what makes other players visible.
+    public static final int PLAY_CLIENTBOUND_ADD_ENTITY = id("play.clientbound.add_entity", 0x01);
+    public static final int PLAY_CLIENTBOUND_REMOVE_ENTITIES = id("play.clientbound.remove_entities", 0x47);
+    public static final int PLAY_CLIENTBOUND_MOVE_ENTITY_POS_ROT =
+            id("play.clientbound.move_entity_pos_rot", 0x30);
+    public static final int PLAY_CLIENTBOUND_ROTATE_HEAD = id("play.clientbound.rotate_head", 0x4D);
+    public static final int PLAY_CLIENTBOUND_PLAYER_INFO_UPDATE =
+            id("play.clientbound.player_info_update", 0x40);
+    public static final int PLAY_CLIENTBOUND_PLAYER_INFO_REMOVE =
+            id("play.clientbound.player_info_remove", 0x3F);
+
+    /** Registry ID of {@code minecraft:player}, needed by Add Entity. */
+    public static final int ENTITY_TYPE_PLAYER = Integer.getInteger("quasar.playerEntityType", 147);
+
     public static final int PLAY_SERVERBOUND_KEEP_ALIVE = id("play.serverbound.keep_alive", 0x1A);
     public static final int PLAY_SERVERBOUND_CHAT = id("play.serverbound.chat", 0x07);
     public static final int PLAY_SERVERBOUND_MOVE_POS = id("play.serverbound.move_pos", 0x1C);

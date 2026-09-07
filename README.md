@@ -25,6 +25,8 @@ before you judge it:
 - Block breaking and placing, with change broadcasts and sequence acknowledgement
 - Anvil persistence: edits survive unload and restart, and the world opens in external tools
 - Full creative inventory: any of the 952 placeable items can be picked and placed
+- Entity tracking, so players see each other move
+- Player data, so you return where you left off
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
@@ -428,6 +430,25 @@ table would reintroduce exactly the desync the pairing exists to prevent.
 Both ID spaces come from Mojang's reports — `registries.json` under `minecraft:item` for item IDs,
 `blocks.json` for default block states — and both are overridable in `hotbar.properties` as
 `<name> = <itemId>:<blockState>`.
+
+## Entity tracking
+
+Players see each other: spawns, movement, head rotation and despawn, plus tab-list entries.
+
+Only players in the same region are considered, and that is exact rather than a shortcut. Two
+players close enough to see each other have overlapping chunk discs, and overlapping discs are one
+region by construction; players in different regions are at least two view distances apart, well
+beyond tracking range. So tracking runs entirely on the owning thread with no cross-region reads —
+the same invariant that makes block edits lock-free.
+
+Movement is sent as a delta, which the protocol encodes as a short of 1/4096 blocks and so tops out
+at eight. A larger jump is sent as a despawn followed by a respawn rather than reaching for the
+teleport packet, which was reworked in 1.21.2 and is one more thing to get wrong.
+
+Tab-list entries are managed separately from entity spawn: the entity comes and goes with range,
+but the tab entry lasts as long as the player is online, or the list would flicker as people walk
+in and out of view. Skins are not sent — that needs signed profile properties from Mojang's session
+servers, which an offline-mode server has no way to obtain.
 
 ## Block editing, and why it needs no locks
 

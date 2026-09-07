@@ -337,6 +337,11 @@ public final class QuasarServer {
         if (players.remove(player.uuid()) == null) {
             return;
         }
+        // The entity despawns on its own once the region drops it, but the tab-list entry has to be
+        // withdrawn explicitly or the name lingers for everyone still online.
+        for (Player other : players.values()) {
+            other.sendPlayerInfoRemove(player.uuid());
+        }
         Log.info("%s left (%d online)", player.name(), players.size());
         broadcast("§e" + player.name() + " left the game");
     }

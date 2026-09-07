@@ -16,6 +16,8 @@ import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
 import io.netty.buffer.ByteBuf;
+import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.ArrayList;
@@ -163,6 +165,7 @@ public final class Player extends Entity {
         }
         updateTrackedChunks();
         streamPendingChunks();
+        updateEntityTracking(region);
         tickKeepAlive();
     }
 
@@ -302,6 +305,165 @@ public final class Player extends Entity {
             awaitingKeepAlive = false;
             lastKeepAliveResponseAt = System.currentTimeMillis();
         }
+    }
+
+    // ------------------------------------------------------------------------ entity tracking
+
+    /**
+     * Beyond this many blocks another player stops being sent. Kept under the chunk view distance
+     * so someone appears well before the terrain they are standing on runs out.
+     */
+    private static final double TRACK_RANGE_SQUARED = 96.0 * 96.0;
+
+    /**
+     * A move larger than this is sent as a despawn and respawn rather than a delta.
+     * {@code move_entity_pos_rot} encodes movement as a short of 1/4096 blocks, which tops out at
+     * eight blocks; anything further has to be re-seeded.
+     */
+    private static final double MAX_DELTA = 7.5;
+
+    /** Entity IDs currently spawned on this client, and where each was last reported. */
+    private final Int2ObjectOpenHashMap<double[]> trackedEntities = new Int2ObjectOpenHashMap<>();
+
+    /**
+     * Sends spawns, moves and despawns for the other players this one can see.
+     *
+     * <p>Only players in the same region are considered, and that is not a shortcut — it is exact.
+     * Two players close enough to see each other have overlapping chunk discs, and overlapping
+     * discs are always one region by construction. Players in different regions are at least two
+     * view distances apart, well beyond {@link #TRACK_RANGE_SQUARED}. So this runs entirely on the
+     * owning thread with no cross-region reads.
+     */
+    private void updateEntityTracking(Region region) {
+        IntOpenHashSet visible = new IntOpenHashSet();
+
+        for (Entity entity : region.entities()) {
+            if (entity == this || entity.isRemoved() || !(entity instanceof Player other)) {
+                continue;
+            }
+            double dx = other.x - x;
+            double dy = other.y - y;
+            double dz = other.z - z;
+            if (dx * dx + dy * dy + dz * dz > TRACK_RANGE_SQUARED) {
+                continue;
+            }
+            visible.add(other.entityId());
+
+            double[] last = trackedEntities.get(other.entityId());
+            if (last == null) {
+                spawnEntity(other);
+                trackedEntities.put(other.entityId(), new double[] {other.x, other.y, other.z});
+            } else {
+                sendEntityMove(other, last);
+            }
+        }
+
+        // Anything tracked but no longer visible has to be taken off the client.
+        if (!trackedEntities.isEmpty()) {
+            var iterator = trackedEntities.keySet().intIterator();
+            while (iterator.hasNext()) {
+                int id = iterator.nextInt();
+                if (!visible.contains(id)) {
+                    despawnEntity(id);
+                    iterator.remove();
+                }
+            }
+        }
+    }
+
+    private void spawnEntity(Player other) {
+        // The client will not render a player entity it has no profile for, so the tab-list entry
+        // has to go first.
+        connection.send(Protocol.PLAY_CLIENTBOUND_PLAYER_INFO_UPDATE, buf -> {
+            buf.writeByte(0x01 | 0x08); // add_player | update_listed
+            ByteBufs.writeVarInt(buf, 1);
+            ByteBufs.writeUuid(buf, other.uuid());
+            ByteBufs.writeString(buf, other.name());
+            ByteBufs.writeVarInt(buf, 0);  // no signed profile properties, so no skin
+            buf.writeBoolean(true);        // listed in the tab list
+        });
+
+        connection.send(Protocol.PLAY_CLIENTBOUND_ADD_ENTITY, buf -> {
+            ByteBufs.writeVarInt(buf, other.entityId());
+            ByteBufs.writeUuid(buf, other.uuid());
+            ByteBufs.writeVarInt(buf, Protocol.ENTITY_TYPE_PLAYER);
+            buf.writeDouble(other.x);
+            buf.writeDouble(other.y);
+            buf.writeDouble(other.z);
+            ByteBufs.writeAngle(buf, other.pitch);
+            ByteBufs.writeAngle(buf, other.yaw);
+            ByteBufs.writeAngle(buf, other.yaw); // head yaw
+            ByteBufs.writeVarInt(buf, 0);        // type-specific data
+            buf.writeShort(0);
+            buf.writeShort(0);
+            buf.writeShort(0);
+        });
+        sendHeadRotation(other);
+        Log.trace("%s now sees %s", name, other.name());
+    }
+
+    private void sendEntityMove(Player other, double[] last) {
+        double dx = other.x - last[0];
+        double dy = other.y - last[1];
+        double dz = other.z - last[2];
+
+        if (Math.abs(dx) > MAX_DELTA || Math.abs(dy) > MAX_DELTA || Math.abs(dz) > MAX_DELTA) {
+            // Too far for a delta: re-seed rather than reach for the reworked teleport packet.
+            despawnEntity(other.entityId());
+            spawnEntity(other);
+            last[0] = other.x;
+            last[1] = other.y;
+            last[2] = other.z;
+            return;
+        }
+        if (dx == 0 && dy == 0 && dz == 0) {
+            sendHeadRotation(other);
+            return;
+        }
+
+        connection.send(Protocol.PLAY_CLIENTBOUND_MOVE_ENTITY_POS_ROT, buf -> {
+            ByteBufs.writeVarInt(buf, other.entityId());
+            buf.writeShort((int) (dx * 4096));
+            buf.writeShort((int) (dy * 4096));
+            buf.writeShort((int) (dz * 4096));
+            ByteBufs.writeAngle(buf, other.yaw);
+            ByteBufs.writeAngle(buf, other.pitch);
+            buf.writeBoolean(other.onGround);
+        });
+        sendHeadRotation(other);
+
+        last[0] = other.x;
+        last[1] = other.y;
+        last[2] = other.z;
+    }
+
+    /** Head yaw is separate from body yaw, and without it heads never turn. */
+    private void sendHeadRotation(Player other) {
+        connection.send(Protocol.PLAY_CLIENTBOUND_ROTATE_HEAD, buf -> {
+            ByteBufs.writeVarInt(buf, other.entityId());
+            ByteBufs.writeAngle(buf, other.yaw);
+        });
+    }
+
+    /**
+     * Drops someone from this client's tab list.
+     *
+     * <p>Separate from entity despawn on purpose: the entity comes and goes with range, but the tab
+     * entry should last as long as they are online, or the list would flicker as people walk in and
+     * out of view.
+     */
+    public void sendPlayerInfoRemove(java.util.UUID uuid) {
+        connection.send(Protocol.PLAY_CLIENTBOUND_PLAYER_INFO_REMOVE, buf -> {
+            ByteBufs.writeVarInt(buf, 1);
+            ByteBufs.writeUuid(buf, uuid);
+        });
+    }
+
+    private void despawnEntity(int entityId) {
+        connection.send(Protocol.PLAY_CLIENTBOUND_REMOVE_ENTITIES, buf -> {
+            ByteBufs.writeVarInt(buf, 1);
+            ByteBufs.writeVarInt(buf, entityId);
+        });
     }
 
     // --------------------------------------------------------------------------- block editing
