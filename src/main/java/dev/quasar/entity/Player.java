@@ -91,6 +91,23 @@ public final class Player extends Entity {
     /** Window IDs cycle 1-99; 0 is reserved for the player's own inventory. */
     private int nextWindowId = 1;
 
+    /**
+     * Revision counter sent with every container update.
+     *
+     * <p>The client echoes the last one it saw on each click and uses it to tell whether its own
+     * prediction is still in step. Sending a constant made every update look like the same
+     * revision, which is what a stale client looks like from the other side.
+     */
+    private int containerStateId = 1;
+
+    /** Drag-painting state: held while the button is down and slots are being swept. */
+    private boolean dragging;
+
+    /** 0 = left drag (split evenly), 1 = right drag (one each), 2 = middle drag (fill). */
+    private int dragKind;
+
+    private final IntOpenHashSet dragSlots = new IntOpenHashSet();
+
     public Player(QuasarServer server, Connection connection, String name, UUID uuid,
                   int viewDistance, double x, double y, double z) {
         super(uuid, x, y, z);
@@ -426,9 +443,10 @@ public final class Player extends Entity {
         if (container == null) {
             return;
         }
+        int revision = ++containerStateId;
         connection.send(Protocol.PLAY_CLIENTBOUND_CONTAINER_SET_CONTENT, buf -> {
             ByteBufs.writeVarInt(buf, container.windowId());
-            ByteBufs.writeVarInt(buf, 1);
+            ByteBufs.writeVarInt(buf, revision);
             ByteBufs.writeVarInt(buf, container.totalSlots());
             for (int slot = 0; slot < container.totalSlots(); slot++) {
                 ItemStack stack = windowSlot(container, slot);
@@ -482,6 +500,14 @@ public final class Player extends Entity {
             return;
         }
 
+        // Drag start and end carry slot -999, so drags are dispatched before the range check.
+        if (mode == 5) {
+            clickDrag(container, slot, button);
+            persistContainer(container);
+            sendContainerContent();
+            return;
+        }
+
         if (slot == -999) {
             // Clicked outside the window: vanilla drops the stack as an item entity. There are no
             // item entities here, so the stack would simply vanish -- better to keep it on the
@@ -497,11 +523,123 @@ public final class Player extends Entity {
         switch (mode) {
             case 0 -> clickPickup(container, slot, button);
             case 1 -> clickQuickMove(container, slot);
+            case 2 -> clickHotbarSwap(container, slot, button);
+            case 6 -> clickCollectMatching(container);
             default -> { }
         }
 
         persistContainer(container);
         sendContainerContent();
+    }
+
+    /**
+     * Drag-painting: hold a button and sweep across slots to spread the held stack over them.
+     *
+     * <p>Arrives as three separate packets — start, one per slot swept, then end — all with mode 5,
+     * distinguished by the button field. Nothing is applied until the end, because the split
+     * depends on how many slots were swept in total.
+     */
+    private void clickDrag(OpenContainer container, int slot, int button) {
+        switch (button) {
+            case 0, 4, 8 -> {
+                dragging = true;
+                dragKind = button / 4; // 0 left, 1 right, 2 middle
+                dragSlots.clear();
+            }
+            case 1, 5, 9 -> {
+                if (dragging && slot >= 0 && slot < container.totalSlots()) {
+                    dragSlots.add(slot);
+                }
+            }
+            case 2, 6, 10 -> {
+                if (dragging) {
+                    applyDrag(container);
+                }
+                dragging = false;
+                dragSlots.clear();
+            }
+            default -> {
+                dragging = false;
+                dragSlots.clear();
+            }
+        }
+    }
+
+    private void applyDrag(OpenContainer container) {
+        if (carried.isEmpty() || dragSlots.isEmpty()) {
+            return;
+        }
+        // Only slots that can actually take the item count towards the split.
+        java.util.List<Integer> targets = new ArrayList<>();
+        for (int slot : dragSlots) {
+            ItemStack existing = windowSlot(container, slot);
+            if (existing.isEmpty() || (existing.stacksWith(carried) && existing.spaceLeft() > 0)) {
+                targets.add(slot);
+            }
+        }
+        if (targets.isEmpty()) {
+            return;
+        }
+
+        int perSlot = switch (dragKind) {
+            case 0 -> carried.count() / targets.size(); // left: split as evenly as it divides
+            case 1 -> 1;                                // right: one apiece
+            default -> ItemStack.MAX_STACK;             // middle: fill, creative only
+        };
+        if (perSlot <= 0) {
+            return;
+        }
+
+        int remaining = carried.count();
+        for (int slot : targets) {
+            if (dragKind != 2 && remaining <= 0) {
+                break;
+            }
+            ItemStack existing = windowSlot(container, slot);
+            int space = existing.isEmpty() ? ItemStack.MAX_STACK : existing.spaceLeft();
+            int give = Math.min(perSlot, space);
+            if (dragKind != 2) {
+                give = Math.min(give, remaining);
+            }
+            if (give <= 0) {
+                continue;
+            }
+            setWindowSlot(container, slot,
+                    existing.isEmpty() ? carried.withCount(give) : existing.grow(give));
+            remaining -= give;
+        }
+        // A middle drag copies from an inexhaustible cursor, as creative mode does.
+        if (dragKind != 2) {
+            carried = carried.withCount(remaining);
+        }
+    }
+
+    /** Number keys 1-9: swap the clicked slot with that hotbar slot. */
+    private void clickHotbarSwap(OpenContainer container, int slot, int hotbarIndex) {
+        if (hotbarIndex < 0 || hotbarIndex > 8) {
+            return;
+        }
+        int inventoryIndex = HotbarKit.FIRST_HOTBAR_SLOT + hotbarIndex;
+        ItemStack inSlot = windowSlot(container, slot);
+        ItemStack inHotbar = inventorySlot(inventoryIndex);
+        setWindowSlot(container, slot, inHotbar);
+        setInventorySlot(inventoryIndex, inSlot);
+    }
+
+    /** Double-click: gather matching stacks from the window onto the cursor. */
+    private void clickCollectMatching(OpenContainer container) {
+        if (carried.isEmpty() || carried.spaceLeft() <= 0) {
+            return;
+        }
+        for (int slot = 0; slot < container.totalSlots() && carried.spaceLeft() > 0; slot++) {
+            ItemStack existing = windowSlot(container, slot);
+            if (!existing.stacksWith(carried)) {
+                continue;
+            }
+            int taken = Math.min(existing.count(), carried.spaceLeft());
+            carried = carried.grow(taken);
+            setWindowSlot(container, slot, existing.shrink(taken));
+        }
     }
 
     private void clickPickup(OpenContainer container, int slot, int button) {
@@ -613,19 +751,48 @@ public final class Player extends Entity {
         sendInventory();
     }
 
-    /** Puts a stack anywhere it fits in the inventory. Silently discarded if it does not. */
+    /**
+     * Puts a stack into the inventory, merging into matching stacks before taking empty slots.
+     *
+     * <p>Hotbar first, then the main grid, matching where vanilla puts a pickup. Anything that will
+     * not fit is discarded, and says so: with no item entities there is nowhere else for it to go,
+     * and losing it quietly is exactly the failure this method exists to prevent elsewhere.
+     */
     private void giveOrDrop(ItemStack stack) {
-        for (int slot = HotbarKit.FIRST_HOTBAR_SLOT; slot < inventory.length && !stack.isEmpty(); slot++) {
-            if (inventory[slot].isEmpty()) {
-                setInventorySlot(slot, stack);
+        int[] order = new int[inventory.length - 9];
+        int index = 0;
+        for (int slot = HotbarKit.FIRST_HOTBAR_SLOT; slot < inventory.length; slot++) {
+            order[index++] = slot;
+        }
+        for (int slot = 9; slot < HotbarKit.FIRST_HOTBAR_SLOT; slot++) {
+            order[index++] = slot;
+        }
+
+        for (int slot : order) {
+            if (stack.isEmpty()) {
                 return;
+            }
+            ItemStack existing = inventory[slot];
+            if (existing.stacksWith(stack)) {
+                int moved = Math.min(stack.count(), existing.spaceLeft());
+                if (moved > 0) {
+                    setInventorySlot(slot, existing.grow(moved));
+                    stack = stack.shrink(moved);
+                }
             }
         }
-        for (int slot = 9; slot < 36 && !stack.isEmpty(); slot++) {
-            if (inventory[slot].isEmpty()) {
-                setInventorySlot(slot, stack);
+        for (int slot : order) {
+            if (stack.isEmpty()) {
                 return;
             }
+            if (inventory[slot].isEmpty()) {
+                setInventorySlot(slot, stack);
+                stack = ItemStack.EMPTY;
+            }
+        }
+        if (!stack.isEmpty()) {
+            Log.warn("%s has no room for %d x item %d; it is lost",
+                    name, stack.count(), stack.itemId());
         }
     }
 
@@ -815,6 +982,7 @@ public final class Player extends Entity {
         if (isEditAllowed(region, x, y, z)) {
             int previous = server.world().getBlock(x, y, z);
             if (!Blocks.isAir(previous)) {
+                salvageContainer(previous, x, y, z);
                 server.world().setBlock(x, y, z, Blocks.AIR);
                 refreshConnections(region, x, y, z);
                 Log.debug("%s broke block %d at %d,%d,%d (region #%d)",
@@ -902,6 +1070,56 @@ public final class Player extends Entity {
         sendBlockChangedAck(sequence);
         int authoritative = server.world().getBlock(x, y, z);
         broadcastBlockUpdate(region, x, y, z, authoritative);
+    }
+
+    /**
+     * Rescues a container's contents before its block is removed.
+     *
+     * <p>Vanilla drops them on the ground as item entities. There are none here, so breaking a
+     * chest simply deleted whatever was inside — silent data loss, and unrecoverable. Handing the
+     * contents to whoever broke it is the closest non-destructive equivalent.
+     *
+     * <p>Also closes the screen if it was this container, so a click afterwards cannot write stale
+     * contents back over a block that no longer exists.
+     */
+    private void salvageContainer(int previousState, int x, int y, int z) {
+        BlockStateRegistry.State state = BlockStateRegistry.byId(previousState);
+        if (state == null) {
+            return;
+        }
+        Containers.Kind kind = Containers.forBlock(state.name());
+        if (kind == null) {
+            return;
+        }
+        if (openContainer != null) {
+            for (int[] block : openContainer.blocks()) {
+                if (block[0] == x && block[1] == y && block[2] == z) {
+                    closeContainer();
+                    break;
+                }
+            }
+        }
+
+        Chunk chunk = server.world().chunkAt(x >> 4, z >> 4);
+        if (chunk == null) {
+            return;
+        }
+        Nbt.NbtCompound entity = chunk.blockEntity(x & 15, y, z & 15);
+        if (entity == null) {
+            return;
+        }
+        int rescued = 0;
+        for (ItemStack stack : ContainerIo.readItems(entity, kind.slots())) {
+            if (!stack.isEmpty()) {
+                giveOrDrop(stack);
+                rescued++;
+            }
+        }
+        if (rescued > 0) {
+            sendInventory();
+            Log.debug("%s broke %s at %d,%d,%d; %d stack(s) went to their inventory",
+                    name, state.name(), x, y, z, rescued);
+        }
     }
 
     /**

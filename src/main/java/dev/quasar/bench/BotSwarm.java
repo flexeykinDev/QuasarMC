@@ -259,13 +259,25 @@ public final class BotSwarm {
                 case 1 -> placeAgainstTopOf(blockX, groundY, blockZ);
                 // A second container beside the first, so the pair should present one window.
                 case 2 -> placeAgainstTopOf(blockX + 1, groundY, blockZ);
-                case 3 -> pickCreativeItem(1); // stone, so the hotbar has something to deposit
+                // A full stack, so a left-drag has something to split.
+                case 3 -> pickCreativeItem(1, 64);
                 case 4 -> openAt(blockX, groundY + 1, blockZ);
                 // The first hotbar slot sits after the container's own slots and the 27 main ones.
                 case 5 -> containerClick(containerSlotCount() + 27, 0, 0);
-                case 6 -> containerClick(0, 0, 0);
-                case 7 -> send(Protocol.PLAY_SERVERBOUND_CONTAINER_CLOSE,
+                // Drag-paint the held stack across two container slots: start, sweep, end.
+                case 6 -> containerClick(-999, 0, 5);
+                case 7 -> containerClick(0, 1, 5);
+                case 8 -> containerClick(1, 1, 5);
+                case 9 -> containerClick(-999, 2, 5);
+                case 10 -> send(Protocol.PLAY_SERVERBOUND_CONTAINER_CLOSE,
                         buf -> ByteBufs.writeVarInt(buf, Math.max(openWindowId, 0)));
+                // Break the chest holding those stacks; the contents must come back, not vanish.
+                case 11 -> send(Protocol.PLAY_SERVERBOUND_PLAYER_ACTION, buf -> {
+                    ByteBufs.writeVarInt(buf, 0);
+                    ByteBufs.writeBlockPos(buf, blockX, groundY + 1, blockZ);
+                    buf.writeByte(1);
+                    ByteBufs.writeVarInt(buf, nextSequence++);
+                });
                 default -> { }
             }
         }
@@ -339,9 +351,13 @@ public final class BotSwarm {
          * out — which is the whole point of the item table.
          */
         void pickCreativeItem(int itemId) {
+            pickCreativeItem(itemId, 1);
+        }
+
+        void pickCreativeItem(int itemId, int count) {
             send(Protocol.PLAY_SERVERBOUND_SET_CREATIVE_MODE_SLOT, buf -> {
                 buf.writeShort(36);              // first hotbar slot
-                ByteBufs.writeVarInt(buf, 1);    // stack count
+                ByteBufs.writeVarInt(buf, count);
                 ByteBufs.writeVarInt(buf, itemId);
                 ByteBufs.writeVarInt(buf, 0);    // components to add
                 ByteBufs.writeVarInt(buf, 0);    // components to remove

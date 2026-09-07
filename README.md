@@ -464,11 +464,24 @@ just "move items around", and a half-implemented furnace would be worse than non
 ### Clicks
 
 Window slots past the container map onto the player's real inventory rather than onto a copy, so
-the two cannot disagree. Two click modes are handled: pick up and place (including right-click for
-half-stacks and single items) and shift-move, which merges into matching stacks before filling
-empty ones, as vanilla does. Other modes — number-key swaps, drag-painting, double-click gather —
-are ignored and answered with a resync, so an unhandled click does nothing rather than something
-wrong.
+the two cannot disagree. Handled:
+
+| mode | what it is |
+|---|---|
+| 0 | pick up and place, right-click for half-stacks and single items |
+| 1 | shift-move, merging into matching stacks before filling empty ones |
+| 2 | number keys 1-9, swapping the slot with that hotbar slot |
+| 5 | drag-painting: hold the button and sweep to spread a stack across slots |
+| 6 | double-click to gather matching stacks onto the cursor |
+
+Drag-painting arrives as three separate packets — start, one per slot swept, then end — all mode 5,
+distinguished by the button field. Nothing is applied until the end, because how the stack splits
+depends on how many slots were swept in total. A left drag divides evenly, a right drag puts one in
+each, and a middle drag fills each from an inexhaustible cursor, which is creative-only.
+
+Every container update carries an incrementing revision. The client echoes the last one it saw on
+each click and uses it to tell whether its prediction is still in step; sending a constant made
+every update look like the same revision, which is indistinguishable from a stale client.
 
 **The whole window is re-sent after every click** rather than sending per-slot deltas. Container
 clicks have a lot of cases, and any disagreement between what the client predicted and what the
@@ -478,6 +491,11 @@ costs a few hundred bytes and makes that class of bug impossible.
 Clicking outside the window keeps the stack on the cursor instead of dropping it: there are no item
 entities here, so a "drop" would silently destroy it. Closing a container with something on the
 cursor puts it back in the inventory for the same reason.
+
+**Breaking a container hands its contents to whoever broke it.** Vanilla drops them on the ground,
+which needs item entities this server does not have — so the alternative was deleting them, which is
+silent and unrecoverable. If the inventory is full the remainder is lost, and says so in the log
+rather than vanishing quietly.
 
 Item stacks carry an ID and a count and nothing else. Enchantments, damage and custom names are
 component data this server does not model, and pretending to would mean dropping them on the first
