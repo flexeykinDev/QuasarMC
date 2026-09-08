@@ -34,6 +34,7 @@ before you judge it:
 - Basic redstone: dust, levers, torches, repeaters and lamps
 - Crafting: all 932 vanilla crafting recipes, at a crafting table
 - Signs you can write on and read back
+- Two-block structures: doors, beds and tall plants place and break as one
 - Random ticks: grass spreads onto bare dirt and dies back under cover
 - Item entities persist across chunk unload, in vanilla's own `entities/` region files
 

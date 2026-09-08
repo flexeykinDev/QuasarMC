@@ -554,7 +554,7 @@ public final class QuasarServer {
                 ? String.format(Locale.ROOT, " OWNERSHIP-VIOLATIONS=%d", Ownership.violationCount())
                 : "";
         return String.format(Locale.ROOT,
-                "regions=%d players=%d(%d ticking) chunks=%d worstMSPT=%.2f slowestTPS=%.1f "
+                "regions=%d players=%d entities=%d chunks=%d worstMSPT=%.2f slowestTPS=%.1f "
                         + "parallel=%d peak=%d/%d threads=%d merges=%d splits=%d safepoint=%.2f%%%s",
                 regionManager.regionCount(), players.size(), trackedEntities, world.loadedChunkCount(),
                 worstMspt, slowestTps,

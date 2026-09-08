@@ -333,12 +333,23 @@ public final class RegionManager {
             return;
         }
         List<Entity> stranded = new ArrayList<>(region.entities());
+        int rehomed = 0;
         for (Entity entity : stranded) {
             region.removeEntityAtSafepoint(entity);
             entity.setRegion(null);
+            // Anything already removed is gone on purpose -- an item that was just written to the
+            // entities file as its chunk unloaded, most often. Re-queueing it puts a dead entity
+            // back into a live region to be removed again on its first tick, and any future path
+            // that resurrected one of those would be an item duplication bug.
+            if (entity.isRemoved()) {
+                continue;
+            }
             pending.add(new Change.AddEntity(entity));
+            rehomed++;
         }
-        Log.debug("Re-homing %d entity/entities from retiring Region#%d", stranded.size(), region.id());
+        if (rehomed > 0) {
+            Log.debug("Re-homing %d entity/entities from retiring Region#%d", rehomed, region.id());
+        }
     }
 
     /**

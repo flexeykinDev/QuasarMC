@@ -18,6 +18,7 @@ import dev.quasar.world.block.BlockConnections;
 import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
+import dev.quasar.world.block.MultiBlock;
 import dev.quasar.world.blockentity.BlockEntityTypes;
 import dev.quasar.world.blockentity.Signs;
 import dev.quasar.world.redstone.RedstoneBlocks;
@@ -780,10 +781,14 @@ public final class Player extends Entity {
             carried = carried.grow(made.count());
         } else {
             // Hands full of something else: vanilla refuses the craft rather than dropping the
-            // result, so nothing is silently lost.
+            // result, so nothing is silently lost. Logged, because from the player's side this is
+            // indistinguishable from the recipe not working.
+            Log.debug("%s could not take a craft result: hands full of item %d",
+                    name, carried.itemId());
             return;
         }
         menu.consumeIngredients();
+        Log.debug("%s crafted %d x item %d", name, made.count(), made.itemId());
     }
 
     /** Shift-click: grid to inventory, or inventory to grid. */
@@ -812,12 +817,18 @@ public final class Player extends Entity {
             return;
         }
         craftingMenu = null;
+        int returned = 0;
         for (int i = 0; i < menu.gridSize(); i++) {
             ItemStack stack = menu.grid(i);
             if (!stack.isEmpty()) {
                 // Given back, never destroyed: a closed crafting screen must not eat materials.
                 giveOrDrop(stack);
+                returned += stack.count();
             }
+        }
+        if (returned > 0) {
+            Log.debug("%s closed a crafting screen; %d item(s) returned from the grid",
+                    name, returned);
         }
         if (!carried.isEmpty()) {
             giveOrDrop(carried);
@@ -1134,6 +1145,11 @@ public final class Player extends Entity {
     private void giveOrDrop(ItemStack stack) {
         ItemStack leftover = insert(stack);
         if (!leftover.isEmpty()) {
+            // Worth saying out loud. An item landing on the floor instead of in the inventory looks
+            // to a player like the server threw their materials away, and the only difference
+            // between that and a bug is whether there was actually room.
+            Log.debug("%s has no room for %d x item %d; dropping it",
+                    name, leftover.count(), leftover.itemId());
             dropItem(leftover);
         }
     }
@@ -1487,6 +1503,21 @@ public final class Player extends Entity {
             if (!Blocks.isAir(previous)) {
                 salvageContainer(previous, x, y, z);
                 server.world().setBlock(x, y, z, Blocks.AIR);
+
+                // Break the other half of a door, bed or tall plant with it. Leaving the orphan
+                // standing is what vanilla explicitly avoids, and it is visible immediately.
+                MultiBlock.Partner partner = MultiBlock.partnerOf(previous, false);
+                if (partner != null) {
+                    int px = x + partner.dx();
+                    int py = y + partner.dy();
+                    int pz = z + partner.dz();
+                    // Only if the expected state is actually there: someone may have already
+                    // broken it, or built something unrelated in its place.
+                    if (server.world().getBlock(px, py, pz) == partner.state()) {
+                        server.world().setBlock(px, py, pz, Blocks.AIR);
+                        broadcastBlockUpdate(region, px, py, pz, Blocks.AIR);
+                    }
+                }
                 refreshConnections(region, x, y, z);
                 Log.debug("%s broke block %d at %d,%d,%d (region #%d)",
                         name, previous, x, y, z, region.id());
@@ -1549,6 +1580,27 @@ public final class Player extends Entity {
             } else if (Blocks.isReplaceable(existing)) {
                 int placed = BlockPlacement.stateFor(
                         state, face, cursorY, yaw, Blocks.isWater(existing));
+
+                // A door, bed or tall plant needs both of its positions. Refusing when the second
+                // one is blocked matches vanilla and is the only honest option: placing just the
+                // lower half leaves a door the client draws as a floating bottom panel.
+                MultiBlock.Partner partner = MultiBlock.partnerOf(placed, true);
+                if (partner != null) {
+                    int px = x + partner.dx();
+                    int py = y + partner.dy();
+                    int pz = z + partner.dz();
+                    if (!isEditAllowed(region, px, py, pz)
+                            || !Blocks.isReplaceable(server.world().getBlock(px, py, pz))) {
+                        Log.debug("%s could not place a two-block %d at %d,%d,%d: no room for its"
+                                + " other half", name, placed, x, y, z);
+                        sendBlockChangedAck(sequence);
+                        sendBlockUpdate(x, y, z, existing);
+                        return;
+                    }
+                    server.world().setBlock(px, py, pz, partner.state());
+                    broadcastBlockUpdate(region, px, py, pz, partner.state());
+                }
+
                 server.world().setBlock(x, y, z, placed);
                 createBlockEntityIfNeeded(placed, x, y, z);
                 if (Signs.isSign(placed)) {
