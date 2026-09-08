@@ -2,6 +2,7 @@ package dev.quasar.world;
 
 import dev.quasar.engine.Region;
 import dev.quasar.engine.Ownership;
+import dev.quasar.world.light.LightEngine;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.util.Log;
 import dev.quasar.world.block.Blocks;
@@ -152,6 +153,11 @@ public final class World {
                     chunk.clearDirty();
                 }
 
+                // Light it before publishing. At this point the chunk belongs to nobody but this
+                // thread, so the column pass costs no one else anything; the sideways spread that
+                // needs neighbours happens later, on the owning region's thread.
+                LightEngine.lightNewChunk(chunk);
+
                 // Publish before asking for adoption, so the region finds it at the safepoint.
                 chunks.put(key, chunk);
                 chunksGenerated.incrementAndGet();
@@ -281,6 +287,26 @@ public final class World {
 
     // ---------------------------------------------------------------------------- block access
 
+    /**
+     * A light engine not bound to any region. Test-only.
+     *
+     * <p>In the server the queue belongs to whichever region is ticking; a test has no region, and
+     * driving propagation directly is the point.
+     */
+    public LightEngine lightEngineForTesting() {
+        if (testLightEngine == null) {
+            testLightEngine = new LightEngine(this);
+        }
+        return testLightEngine;
+    }
+
+    private LightEngine testLightEngine;
+
+    /** Inserts a chunk without generating it. Test-only. */
+    public void putChunkForTesting(Chunk chunk) {
+        chunks.put(ChunkPos.key(chunk.x(), chunk.z()), chunk);
+    }
+
     public Chunk chunkAt(int chunkX, int chunkZ) {
         return chunks.get(ChunkPos.key(chunkX, chunkZ));
     }
@@ -306,7 +332,21 @@ public final class World {
         if (chunk == null || y < minY || y > maxY()) {
             return false;
         }
+        int previous = chunk.getBlock(x & 15, y, z & 15);
         chunk.setBlock(x & 15, y, z & 15, state);
+        if (previous != state) {
+            // Queued on the *calling region's* engine, not propagated here. The caller is mid-edit
+            // on a region thread and a single break can cascade for thousands of blocks, so the
+            // region drains it later under a budget.
+            //
+            // The queue belongs to the region rather than the world because two regions ticking in
+            // parallel would otherwise be pushing and popping the same queue -- which is precisely
+            // the shared mutable state this engine exists to not have.
+            Region current = Region.current();
+            if (current != null) {
+                current.lightEngine().onBlockChanged(x, y, z, previous, state);
+            }
+        }
         return true;
     }
 

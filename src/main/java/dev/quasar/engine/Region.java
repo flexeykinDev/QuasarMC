@@ -4,6 +4,7 @@ import dev.quasar.entity.Entity;
 import dev.quasar.util.Log;
 import dev.quasar.world.ChunkPos;
 import dev.quasar.world.World;
+import dev.quasar.world.light.LightEngine;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.ArrayDeque;
@@ -93,16 +94,41 @@ public final class Region {
     private long tickCount;
     private volatile Thread owner;
 
+    /**
+     * The region the calling thread is currently ticking, or null.
+     *
+     * <p>Lets code deep in the world -- {@link dev.quasar.world.World#setBlock} in particular --
+     * reach the region responsible for the work it is doing without threading a parameter through
+     * every layer, and without a lookup by chunk position on a hot path.
+     */
+    private static final ThreadLocal<Region> CURRENT = new ThreadLocal<>();
+
+    /** Light propagation queued by this region, drained under a budget at the end of its tick. */
+    private final LightEngine lightEngine;
+
+    /** Chunks adopted at a safepoint, waiting to be seeded on this region's own thread. */
+    private final Queue<Long> pendingLightSeeds = new ConcurrentLinkedQueue<>();
+
     Region(int id, World world, RegionManager manager, long seed) {
         this.id = id;
         this.world = world;
         this.manager = manager;
         this.random = new Random(seed ^ (id * 0x9E3779B97F4A7C15L));
+        this.lightEngine = new LightEngine(world);
         this.nextTickNanos = System.nanoTime();
     }
 
     public int id() {
         return id;
+    }
+
+    /** The region being ticked on this thread, or null if this is not a region tick. */
+    public static Region current() {
+        return CURRENT.get();
+    }
+
+    public LightEngine lightEngine() {
+        return lightEngine;
     }
 
     public World world() {
@@ -229,6 +255,9 @@ public final class Region {
     void addChunkAtSafepoint(long chunkKey) {
         Ownership.assertAtSafepoint("Region.addChunk");
         chunks.add(chunkKey);
+        // Seeding walks the whole chunk and must run on this region's thread, not the dispatcher's,
+        // or a safepoint would carry the cost of lighting every chunk that just loaded.
+        pendingLightSeeds.add(chunkKey);
     }
 
     /** Safepoint-only. Called by {@link RegionManager}. */
@@ -241,6 +270,10 @@ public final class Region {
     void absorbAtSafepoint(Region other) {
         Ownership.assertAtSafepoint("Region.absorb");
         chunks.addAll(other.chunks);
+        // Light work the dying region never got to is inherited rather than dropped, exactly like
+        // its mailbox: losing it would leave those chunks permanently half-lit.
+        pendingLightSeeds.addAll(other.pendingLightSeeds);
+        other.pendingLightSeeds.clear();
         for (Entity entity : other.entities) {
             entity.setRegion(this);
             entities.add(entity);
@@ -287,6 +320,7 @@ public final class Region {
     void runTick() {
         long start = System.nanoTime();
         owner = Thread.currentThread();
+        CURRENT.set(this);
         state.set(State.TICKING);
         try {
             drainMailbox();
@@ -294,16 +328,58 @@ public final class Region {
             world.tickRegion(this);
             tickEntities();
             applyPendingRemovals();
+            tickLight();
         } catch (Throwable t) {
             // One region blowing up must not take the server down; log it and keep the others alive.
             Log.error("Region " + id + " threw during tick " + tickCount, t);
         } finally {
             tickCount++;
             owner = null;
+            CURRENT.remove();
             long duration = System.nanoTime() - start;
             metrics.recordTick(start, duration);
             advanceDeadline(start + duration);
             state.set(State.IDLE);
+        }
+    }
+
+    /**
+     * Seeds newly adopted chunks and drains queued light propagation.
+     *
+     * <p>Budgeted rather than run to completion: breaking the one block that opens a cave to
+     * daylight can cascade across thousands of positions, and paying for all of it inside a single
+     * tick is exactly the latency spike a region-threaded engine is supposed to avoid. Work left
+     * over simply continues next tick.
+     */
+    private void tickLight() {
+        Long seed;
+        while ((seed = pendingLightSeeds.poll()) != null) {
+            dev.quasar.world.Chunk chunk =
+                    world.chunkAt(ChunkPos.keyX(seed), ChunkPos.keyZ(seed));
+            if (chunk != null) {
+                lightEngine.seedChunk(chunk);
+            }
+        }
+        lightEngine.processQueue(LightEngine.DEFAULT_BUDGET);
+
+        // Tell anyone watching. Every player who could see these chunks is an entity of this region
+        // -- the same argument that makes block-change broadcasts a plain loop -- so this needs no
+        // coordination either.
+        long[] dirty = lightEngine.drainDirtyChunks();
+        if (dirty.length == 0) {
+            return;
+        }
+        for (Entity entity : entities) {
+            if (!(entity instanceof dev.quasar.entity.Player player)) {
+                continue;
+            }
+            for (long key : dirty) {
+                dev.quasar.world.Chunk chunk =
+                        world.chunkAt(ChunkPos.keyX(key), ChunkPos.keyZ(key));
+                if (chunk != null) {
+                    player.sendLightUpdate(chunk);
+                }
+            }
         }
     }
 

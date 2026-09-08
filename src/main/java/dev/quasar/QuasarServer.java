@@ -5,6 +5,7 @@ import com.google.gson.JsonObject;
 import dev.quasar.config.ServerConfig;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.engine.Ownership;
+import dev.quasar.world.light.LightProperties;
 import dev.quasar.engine.RegionScheduler;
 import dev.quasar.entity.ItemEntity;
 import dev.quasar.entity.Player;
@@ -74,6 +75,9 @@ public final class QuasarServer {
         // Both tables are needed regardless of persistence: the block table also backs item
         // placement, and the item table is what makes the creative inventory work.
         BlockStateRegistry.loadFullTableIfPresent();
+        // After the block table, never before: the light tables are indexed by state ID and would
+        // otherwise be built against the built-in handful and miss every state blocks.json adds.
+        LightProperties.build();
         ItemRegistry.loadIfPresent();
 
         RegionStorage storage = null;

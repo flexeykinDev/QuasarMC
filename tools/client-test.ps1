@@ -38,7 +38,7 @@ param(
 
     [int] $Port = 25565,
 
-    [ValidateSet('chat', 'full')]
+    [ValidateSet('chat', 'full', 'light')]
     [string] $Scenario = 'full',
 
     # Attach to a server that is already running instead of starting one.
@@ -115,7 +115,7 @@ public static class Native {
 $SCAN = @{
     W = 0x11; A = 0x1E; S = 0x1F; D = 0x20; Q = 0x10; E = 0x12; T = 0x14
     SPACE = 0x39; ENTER = 0x1C; ESC = 0x01; F2 = 0x3C; SHIFT = 0x2A
-    D1 = 0x02; D2 = 0x03; D3 = 0x04
+    D1 = 0x02; D2 = 0x03; D3 = 0x04; D9 = 0x0A
 }
 
 $MOUSE = @{
@@ -336,6 +336,33 @@ if ($Scenario -eq 'full') {
     Write-Host '  screenshot (F2)'
     Tap $SCAN.F2
     Start-Sleep -Milliseconds 800
+}
+
+if ($Scenario -eq 'light') {
+    # Proves the light engine visually. A flat world in daylight looks identical whether light is
+    # propagated or faked full-bright, so the only convincing evidence is a hole deep enough to be
+    # dark and a torch that lights it back up.
+    Write-Host '  digging down'
+    Look 0 400
+    Click 'LEFT' 1400
+    Start-Sleep -Milliseconds 1200
+
+    Write-Host '  screenshot in the hole (expect shadow)'
+    Tap $SCAN.F2
+    Start-Sleep -Milliseconds 900
+
+    Write-Host '  selecting the torch (hotbar slot 9)'
+    Tap $SCAN.D9
+    Start-Sleep -Milliseconds 400
+
+    Write-Host '  placing the torch'
+    Look 0 -150
+    Click 'RIGHT'
+    Start-Sleep -Milliseconds 900
+
+    Write-Host '  screenshot with torch (expect light)'
+    Tap $SCAN.F2
+    Start-Sleep -Milliseconds 900
 }
 
 Say 'automation: end'

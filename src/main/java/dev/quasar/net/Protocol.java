@@ -80,6 +80,15 @@ public final class Protocol {
     public static final int PLAY_CLIENTBOUND_KEEP_ALIVE = id("play.clientbound.keep_alive", 0x27);
     /** {@code level_chunk_with_light} in Mojang's registry. */
     public static final int PLAY_CLIENTBOUND_CHUNK_DATA = id("play.clientbound.chunk_data", 0x28);
+
+    /**
+     * {@code light_update}, for light that changes after a chunk has already been sent.
+     *
+     * <p>0x2B, read from Mojang's generated packet report rather than counted by hand -- the
+     * set_default_spawn_position collision proved how a guessed ID surfaces: as a decode failure
+     * inside some unrelated packet the server never sent.
+     */
+    public static final int PLAY_CLIENTBOUND_LIGHT_UPDATE = id("play.clientbound.light_update", 0x2B);
     public static final int PLAY_CLIENTBOUND_LOGIN = id("play.clientbound.login", 0x2C);
     public static final int PLAY_CLIENTBOUND_PLAYER_POSITION = id("play.clientbound.player_position", 0x42);
     public static final int PLAY_CLIENTBOUND_SET_CENTER_CHUNK = id("play.clientbound.set_center_chunk", 0x58);

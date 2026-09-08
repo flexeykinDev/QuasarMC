@@ -29,6 +29,7 @@ before you judge it:
 - Player data, so you return where you left off
 - Block entities and working containers, stored in Anvil and preserved even when unmodelled
 - Item entities: drops fall, merge, and are picked up with no duplication or loss
+- Propagating sky and block light, with no cross-region coordination needed
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
@@ -45,7 +46,6 @@ before you judge it:
   [Persistence](#persistence--anvil).
 - **Online mode.** No encryption, no Mojang session check. Startup *fails* if you enable it
   rather than silently running something insecure. Do not expose this to the internet.
-- **Light engine.** Chunks ship full-bright sky light instead of propagating light.
 - **Plugin API.**
 
 **Verified against a real client** (vanilla 1.21.4 via PrismLauncher) for handshake, status, login
@@ -568,6 +568,66 @@ creative.
 Add Entity carries no item stack, so a drop is invisible until its metadata arrives; the tracker
 sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
 partial pickup changes the count.
+
+## The light engine
+
+Sky and block light propagate properly: caves are dark, overhangs cast shade, a torch lights a room,
+and breaking the block that caps a shaft lets daylight fall to the floor.
+
+### Why it needs no cross-region coordination
+
+Light is capped at 15 and loses at least one level per block, so a change influences blocks at most
+15 away. A section is 16 wide. Fifteen blocks from the very edge of a chunk therefore lands in the
+*adjacent* chunk and cannot reach the one beyond it — the blast radius of any light update is the
+3x3 chunks around it.
+
+The engine already guarantees chunks within `LINK_RADIUS` (2) of each other share a region. **1 < 2**,
+so every chunk a light update can touch is already owned by the region doing the update. Light needs
+no mailbox and no ownership transfer; it falls out of the same geometry that makes block editing
+lock-free.
+
+The roadmap assumed light would need an explicit mailbox. It does not, and that is worth stating
+precisely rather than quietly enjoying: the guarantee depends on two constants. Raising the maximum
+light level, shrinking a section, or dropping `LINK_RADIUS` to 1 turns light into a silent
+cross-region data race. `LightEngineTest.lightCannotReachBeyondTheAdjacentChunk` asserts the
+arithmetic so that change fails loudly instead.
+
+The *queue*, though, is per-region rather than per-world. Two regions ticking in parallel would
+otherwise push and pop one shared queue — precisely the shared mutable state the engine exists not
+to have. `World.setBlock` finds the right one through `Region.current()`, a thread-local the tick
+loop maintains.
+
+### Predictable latency
+
+Propagation is breadth-first and drained under a budget (`DEFAULT_BUDGET`, 8192 positions per region
+tick). A cascade — breaking the one block that opens a long cave to daylight — spreads over several
+ticks instead of spiking one. A region's light cost is bounded by the budget, never by the size of
+the cascade. Work left over is deferred, never dropped, which a test pins by draining a large
+propagation through a deliberately tiny budget.
+
+### Memory
+
+Light is 4 bits per block: a section is 2048 bytes, and a chunk with sky and block light for 26
+sections would be ~106 KB. A few thousand chunks would be hundreds of megabytes of near-identical
+bytes — pitch black underground, full daylight above.
+
+So a light section holds either a real array or a single uniform value, and only materialises when
+something inside it actually varies. Generation fills every section above the terrain as uniform
+daylight without allocating anything.
+
+### Honest approximations
+
+- **Occlusion is by block name, not by shape.** Vanilla decides from collision shape, so a slab
+  blocks light from below but not the side. There are no shapes here, so a curated set of names
+  lets light through and everything else stops it. Light does not leak past slabs, fences or stairs
+  the way it should.
+- **Emission is a hand-written table.** Mojang's generated block report carries every state and its
+  properties but *not* luminance, so there is nothing to read it from. The listed blocks are right;
+  an unlisted emitter reads as dark.
+- **No daylight cycle.** Sky light is computed at full strength; there is no night, so sky light
+  never dims.
+
+Cost measured with six bots and 1734 loaded chunks: worst MSPT 1.90, a full 20.0 TPS.
 
 ## Enforced ownership
 

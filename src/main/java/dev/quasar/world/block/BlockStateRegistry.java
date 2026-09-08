@@ -128,6 +128,23 @@ public final class BlockStateRegistry {
         return BY_ID.get(id);
     }
 
+    /**
+     * The largest state ID in the table.
+     *
+     * <p>Used to size the light engine's per-state lookup arrays, which trade a few hundred
+     * kilobytes for avoiding a map lookup and a string comparison on every block a light update
+     * visits -- and one sky-light fill visits tens of thousands.
+     */
+    public static int highestStateId() {
+        int highest = 0;
+        for (int id : BY_ID.keySet()) {
+            if (id > highest) {
+                highest = id;
+            }
+        }
+        return highest;
+    }
+
     /** @return the state ID, or -1 when this name/property combination is unknown */
     public static int idFor(String name, Map<String, String> properties) {
         return BY_KEY.getInt(key(name, properties));

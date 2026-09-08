@@ -55,7 +55,14 @@ public final class HotbarKit {
             entry("oak_planks", 36, 15),
             entry("oak_log", 134, 137),
             entry("glass", 195, 562),
-            entry("bedrock", 58, 85));
+            // A torch rather than bedrock, which was doing nothing useful in creative. The torch is
+            // the only way to see the block-light half of the light engine without opening the
+            // creative menu, and the first thing anyone reaches for after digging down.
+            //
+            // Nine entries, not ten: slots 36-44 are the hotbar and a tenth spills into 45, the
+            // offhand -- where it is unreachable by the number keys and easy to mistake for a bug
+            // in the kit.
+            entry("torch", 304, 2398));
 
     /** Player inventory slot index of the first hotbar slot. Slots 36-44 are the hotbar. */
     public static final int FIRST_HOTBAR_SLOT = 36;

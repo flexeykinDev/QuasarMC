@@ -4,6 +4,7 @@ import dev.quasar.nbt.Nbt;
 import dev.quasar.net.ByteBufs;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
+import dev.quasar.world.light.LightStorage;
 import io.netty.buffer.ByteBuf;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 
@@ -22,6 +23,9 @@ public final class Chunk {
 
     /** MOTION_BLOCKING heightmap, stored as height above {@link #minY}. */
     private final short[] heightmap = new short[256];
+
+    /** Sky and block light. Lazily sized inside {@link LightStorage}; see there for why. */
+    private final LightStorage light;
 
     /**
      * Block entities, keyed by position within the chunk.
@@ -48,6 +52,7 @@ public final class Chunk {
         this.x = x;
         this.z = z;
         this.minY = minY;
+        this.light = new LightStorage(height / ChunkSection.SIZE, minY);
         this.sections = new ChunkSection[height / ChunkSection.SIZE];
         for (int i = 0; i < sections.length; i++) {
             sections[i] = new ChunkSection(Blocks.AIR);
@@ -78,6 +83,26 @@ public final class Chunk {
     public long[] packedHeightmap() { return packHeightmap(); }
 
     public ChunkSection section(int index) { return sections[index]; }
+
+    public LightStorage light() { return light; }
+
+    /**
+     * Y of the highest block in this chunk that light cannot pass through, or {@link #minY()} - 1
+     * when the chunk is empty.
+     *
+     * <p>Everything above this is open sky in every column, so the light engine can fill those
+     * sections uniformly instead of walking them.
+     */
+    public int highestOccludingY() {
+        int highest = minY - 1;
+        for (int i = 0; i < 256; i++) {
+            int top = heightmap[i] + minY - 1;
+            if (top > highest) {
+                highest = top;
+            }
+        }
+        return highest;
+    }
 
     /** @param localX 0-15, @param localZ 0-15, y in absolute world coordinates */
     public int getBlock(int localX, int y, int localZ) {
@@ -217,35 +242,60 @@ public final class Chunk {
     }
 
     /**
-     * Writes the light payload.
+     * Writes the light payload: four masks, then the arrays for the sections a mask marked present.
      *
-     * <p>This server ships full-bright sky light everywhere rather than running a light engine:
-     * a real propagating light engine is a large piece of work on its own, and shipping 0xFF keeps
-     * the world visible instead of pitch black. Block light is sent as empty.
+     * <p>A section is announced as present or empty, never both. The protocol has an "all zero"
+     * mask but no "all fifteen" one, so a uniformly daylit section still has to be sent as 2048
+     * real bytes -- only fully dark sections get to be a single mask bit, which is most of them
+     * underground.
      */
     public void writeLight(ByteBuf buf) {
         // Light arrays cover the sections plus one below and one above the world.
         int lightSections = sections.length + 2;
 
-        long[] skyMask = bitSet(lightSections, true);
-        long[] blockMask = bitSet(lightSections, false);
-        long[] emptySkyMask = bitSet(lightSections, false);
-        long[] emptyBlockMask = bitSet(lightSections, true);
+        long[] skyMask = new long[(lightSections + 63) / 64];
+        long[] blockMask = new long[(lightSections + 63) / 64];
+        long[] emptySkyMask = new long[(lightSections + 63) / 64];
+        long[] emptyBlockMask = new long[(lightSections + 63) / 64];
+
+        for (int i = 0; i < lightSections; i++) {
+            if (light.isSkySectionEmpty(i)) {
+                emptySkyMask[i >> 6] |= 1L << (i & 63);
+            } else {
+                skyMask[i >> 6] |= 1L << (i & 63);
+            }
+            if (light.isBlockSectionEmpty(i)) {
+                emptyBlockMask[i >> 6] |= 1L << (i & 63);
+            } else {
+                blockMask[i >> 6] |= 1L << (i & 63);
+            }
+        }
 
         writeLongArray(buf, skyMask);
         writeLongArray(buf, blockMask);
         writeLongArray(buf, emptySkyMask);
         writeLongArray(buf, emptyBlockMask);
 
-        ByteBufs.writeVarInt(buf, lightSections); // sky light arrays
-        byte[] full = new byte[2048];
-        java.util.Arrays.fill(full, (byte) 0xFF);
-        for (int i = 0; i < lightSections; i++) {
-            ByteBufs.writeVarInt(buf, full.length);
-            buf.writeBytes(full);
-        }
+        writeLightArrays(buf, lightSections, skyMask, true);
+        writeLightArrays(buf, lightSections, blockMask, false);
+    }
 
-        ByteBufs.writeVarInt(buf, 0); // no block light arrays
+    private void writeLightArrays(ByteBuf buf, int lightSections, long[] mask, boolean sky) {
+        int present = 0;
+        for (int i = 0; i < lightSections; i++) {
+            if ((mask[i >> 6] & (1L << (i & 63))) != 0) {
+                present++;
+            }
+        }
+        ByteBufs.writeVarInt(buf, present);
+        for (int i = 0; i < lightSections; i++) {
+            if ((mask[i >> 6] & (1L << (i & 63))) == 0) {
+                continue;
+            }
+            byte[] data = sky ? light.skyBytes(i) : light.blockBytes(i);
+            ByteBufs.writeVarInt(buf, data.length);
+            buf.writeBytes(data);
+        }
     }
 
     private static long[] bitSet(int bitCount, boolean allSet) {

@@ -325,6 +325,28 @@ public final class Player extends Entity {
         });
     }
 
+    /**
+     * Resends light for one chunk this player already has.
+     *
+     * <p>The chunk packet carries light, but only once. Anything that changes light afterwards --
+     * a torch placed, a roof broken -- needs this, or the client keeps rendering the lighting the
+     * world had when the chunk arrived.
+     *
+     * <p>Silently ignores chunks the player has not been sent: their light will be correct when the
+     * chunk itself arrives, and sending an update for a chunk the client does not have is a decode
+     * error on their side.
+     */
+    public void sendLightUpdate(Chunk chunk) {
+        if (!sentChunks.contains(ChunkPos.key(chunk.x(), chunk.z()))) {
+            return;
+        }
+        connection.send(Protocol.PLAY_CLIENTBOUND_LIGHT_UPDATE, buf -> {
+            ByteBufs.writeVarInt(buf, chunk.x());
+            ByteBufs.writeVarInt(buf, chunk.z());
+            chunk.writeLight(buf);
+        });
+    }
+
     private void tickKeepAlive() {
         long now = System.currentTimeMillis();
         if (awaitingKeepAlive) {

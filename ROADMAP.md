@@ -19,13 +19,20 @@ production.
 
 **Goal:** make the core bulletproof.
 
-### 1. A real light engine
+### 1. A real light engine — **done (2026-09-08)**
 
 Not merely "add light", but make it **region-safe**. Light updates must not create cross-region
 dependencies without an explicit mailbox.
 
 *Better than Folia:* predictable light-update latency, plus the ability to defer expensive
 recalculation.
+
+**Landed as** `world/light/`. Sky and block light propagate; budgeted at 8192 positions per region
+tick, so a cascade defers instead of spiking. It turned out to need **no mailbox at all**: light
+reaches at most 15 blocks, which is at most 1 chunk, and LINK_RADIUS already guarantees chunks
+within 2 share a region. The queue is per-region even so, because a shared one would itself be
+cross-region mutable state. Approximations (occlusion by name not shape, hand-written emission
+table, no daylight cycle) are listed in the README.
 
 ### 2. A strict ownership model, with assertions — **done (2026-09-08)**
 
@@ -155,7 +162,7 @@ concurrency), with a clean and documented architecture.
 
 **The critical path — none of this is optional for production:**
 
-1. Light engine
+1. ~~Light engine~~ — done
 2. Block physics and water
 3. Basic redstone
 4. Inventory and crafting
