@@ -1,6 +1,8 @@
 package dev.quasar;
 
 import dev.quasar.config.ServerConfig;
+import java.nio.file.Path;
+import dev.quasar.item.RecipeExtractor;
 import dev.quasar.engine.Region;
 import dev.quasar.entity.Player;
 import dev.quasar.util.Log;
@@ -18,6 +20,19 @@ public final class Main {
     private Main() {}
 
     public static void main(String[] args) throws Exception {
+        // Handled before anything else starts: this is a data-extraction tool, not a server run.
+        List<String> arguments = List.of(args);
+        int extract = arguments.indexOf("--extract-recipes");
+        if (extract >= 0) {
+            if (extract + 1 >= arguments.size()) {
+                Log.error("--extract-recipes needs the path to a Minecraft client or server jar");
+                System.exit(2);
+                return;
+            }
+            RecipeExtractor.run(arguments.get(extract + 1), Path.of("recipes.json"));
+            return;
+        }
+
         ServerConfig config = ServerConfig.loadOrCreate();
         try {
             Log.setLevel(Log.Level.valueOf(config.logLevel.toUpperCase(Locale.ROOT)));

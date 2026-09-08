@@ -5,6 +5,8 @@ import dev.quasar.engine.Region;
 import dev.quasar.item.HotbarKit;
 import dev.quasar.item.ItemRegistry;
 import dev.quasar.item.ItemStack;
+import dev.quasar.item.RecipeRegistry;
+import dev.quasar.item.CraftingMenu;
 import dev.quasar.nbt.Nbt;
 import dev.quasar.net.ByteBufs;
 import dev.quasar.net.Connection;
@@ -89,6 +91,13 @@ public final class Player extends Entity {
 
     /** The container screen this player has open, or {@code null}. */
     private OpenContainer openContainer;
+
+    /**
+     * An open crafting screen, if any. Separate from {@link #openContainer} because a crafting grid
+     * is backed by nothing: it has no block entity, persists nothing, and hands its contents back
+     * when closed.
+     */
+    private CraftingMenu craftingMenu;
 
     /** Window IDs cycle 1-99; 0 is reserved for the player's own inventory. */
     private int nextWindowId = 1;
@@ -201,6 +210,11 @@ public final class Player extends Entity {
             // Cleanup deliberately happens here rather than in the disconnect handler: the ticket
             // set is region-owned state, and the network thread must not touch it. Saving belongs
             // here for the same reason -- position is only consistent on the owning thread.
+            // Before saving, not after: a crafting grid is not part of the inventory, so logging
+            // out with materials in it would save an inventory that does not contain them and the
+            // items would simply cease to exist.
+            closeCraftingMenu();
+
             server.savePlayer(this);
             int held = ticketedChunks.size();
             releaseTickets();
@@ -570,7 +584,248 @@ public final class Player extends Entity {
      * ignored and answered with a resync, so an unhandled click does nothing rather than doing
      * something wrong.
      */
+    /**
+     * Opens a 3x3 crafting screen for a crafting table.
+     *
+     * @return true when the click was consumed
+     */
+    private boolean tryOpenCraftingTable(Region region, int x, int y, int z) {
+        if (!RecipeRegistry.available() || !isEditAllowed(region, x, y, z)) {
+            return false;
+        }
+        BlockStateRegistry.State state = BlockStateRegistry.byId(server.world().getBlock(x, y, z));
+        if (state == null || !"minecraft:crafting_table".equals(state.name())) {
+            return false;
+        }
+
+        int windowId = nextWindowId;
+        nextWindowId = nextWindowId % 99 + 1;
+        closeContainer();
+        craftingMenu = new CraftingMenu(windowId, 3, 3, x, y, z);
+
+        connection.send(Protocol.PLAY_CLIENTBOUND_OPEN_SCREEN, buf -> {
+            ByteBufs.writeVarInt(buf, windowId);
+            ByteBufs.writeVarInt(buf, Protocol.MENU_TYPE_CRAFTING);
+            Nbt.writeNetwork(buf, Nbt.compound().putString("text", "Crafting"));
+        });
+        sendCraftingContent();
+        Log.debug("%s opened a crafting table at %d,%d,%d", name, x, y, z);
+        return true;
+    }
+
+    /** Sends the crafting window in full, for the same resync reason containers are sent in full. */
+    private void sendCraftingContent() {
+        CraftingMenu menu = craftingMenu;
+        if (menu == null) {
+            return;
+        }
+        int revision = ++containerStateId;
+        connection.send(Protocol.PLAY_CLIENTBOUND_CONTAINER_SET_CONTENT, buf -> {
+            ByteBufs.writeVarInt(buf, menu.windowId());
+            ByteBufs.writeVarInt(buf, revision);
+            ByteBufs.writeVarInt(buf, menu.totalSlots());
+            for (int slot = 0; slot < menu.totalSlots(); slot++) {
+                ItemStack stack = craftingSlot(menu, slot);
+                ByteBufs.writeItemStack(buf, stack.itemId(), stack.count());
+            }
+            ByteBufs.writeItemStack(buf, carried.itemId(), carried.count());
+        });
+    }
+
+    /** Reads a crafting window slot: result, grid, then the player inventory. */
+    private ItemStack craftingSlot(CraftingMenu menu, int slot) {
+        if (slot == CraftingMenu.RESULT_SLOT) {
+            return menu.result();
+        }
+        if (menu.isGridSlot(slot)) {
+            return menu.grid(menu.gridIndexOf(slot));
+        }
+        int inventorySlot = playerSlotForCrafting(menu, slot);
+        return inventorySlot < 0 ? ItemStack.EMPTY : inventory[inventorySlot];
+    }
+
+    private void setCraftingSlot(CraftingMenu menu, int slot, ItemStack stack) {
+        if (menu.isGridSlot(slot)) {
+            menu.setGrid(menu.gridIndexOf(slot), stack);
+            return;
+        }
+        int inventorySlot = playerSlotForCrafting(menu, slot);
+        if (inventorySlot >= 0) {
+            inventory[inventorySlot] = stack;
+        }
+    }
+
+    /**
+     * Maps a crafting window slot onto a real inventory slot.
+     *
+     * <p>The window lists 27 main slots then the 9 hotbar slots, while the inventory array stores
+     * the hotbar last, at 36-44. Getting this backwards puts a crafted item into a slot the player
+     * is not looking at.
+     */
+    private int playerSlotForCrafting(CraftingMenu menu, int slot) {
+        int offset = slot - (1 + menu.gridSize());
+        if (offset < 0) {
+            return -1;
+        }
+        if (offset < 27) {
+            return 9 + offset;
+        }
+        if (offset < 36) {
+            return 36 + (offset - 27);
+        }
+        return -1;
+    }
+
+    /** Handles a click in the crafting window. */
+    private void handleCraftingClick(CraftingMenu menu, int slot, int button, int mode) {
+        if (slot == -999) {
+            if (!carried.isEmpty()) {
+                int thrown = button == 1 ? carried.count() : 1;
+                dropItem(carried.withCount(thrown));
+                carried = carried.shrink(thrown);
+            }
+            sendCraftingContent();
+            return;
+        }
+        if (slot < 0 || slot >= menu.totalSlots()) {
+            sendCraftingContent();
+            return;
+        }
+
+        if (slot == CraftingMenu.RESULT_SLOT) {
+            takeCraftingResult(menu, mode);
+        } else if (mode == 1) {
+            quickMoveCrafting(menu, slot);
+        } else if (mode == 0) {
+            pickupCrafting(menu, slot, button);
+        }
+
+        menu.refreshResult();
+        sendCraftingContent();
+    }
+
+    /**
+     * Ordinary pick-up and put-down inside the crafting window.
+     *
+     * <p>Deliberately simpler than the container equivalent: no drag painting and no hotbar
+     * swapping here yet, so an unhandled mode leaves the window untouched and the full resync at
+     * the end puts the client back in step rather than letting it keep a stale prediction.
+     */
+    private void pickupCrafting(CraftingMenu menu, int slot, int button) {
+        ItemStack inSlot = craftingSlot(menu, slot);
+
+        if (carried.isEmpty()) {
+            if (inSlot.isEmpty()) {
+                return;
+            }
+            int taken = button == 1 ? (inSlot.count() + 1) / 2 : inSlot.count();
+            carried = inSlot.withCount(taken);
+            setCraftingSlot(menu, slot, inSlot.shrink(taken));
+            return;
+        }
+
+        if (inSlot.isEmpty()) {
+            int placed = button == 1 ? 1 : carried.count();
+            setCraftingSlot(menu, slot, carried.withCount(placed));
+            carried = carried.shrink(placed);
+            return;
+        }
+
+        if (inSlot.stacksWith(carried)) {
+            int moved = Math.min(button == 1 ? 1 : carried.count(), inSlot.spaceLeft());
+            if (moved > 0) {
+                setCraftingSlot(menu, slot, inSlot.grow(moved));
+                carried = carried.shrink(moved);
+                return;
+            }
+        }
+        // Different items: swap what is held for what is in the slot, as vanilla does.
+        setCraftingSlot(menu, slot, carried);
+        carried = inSlot;
+    }
+
+    /**
+     * Takes the crafted result.
+     *
+     * <p>Shift-clicking crafts repeatedly until the grid runs out or the inventory fills, which is
+     * what makes crafting a stack of sticks bearable.
+     */
+    private void takeCraftingResult(CraftingMenu menu, int mode) {
+        if (menu.result().isEmpty()) {
+            return;
+        }
+        if (mode == 1) {
+            int guard = 0;
+            while (!menu.result().isEmpty() && guard++ < 512) {
+                if (!insert(menu.result()).isEmpty()) {
+                    // No room left; stop rather than dropping the surplus on the floor.
+                    break;
+                }
+                menu.consumeIngredients();
+            }
+            return;
+        }
+
+        ItemStack made = menu.result();
+        if (carried.isEmpty()) {
+            carried = made;
+        } else if (carried.stacksWith(made) && carried.spaceLeft() >= made.count()) {
+            carried = carried.grow(made.count());
+        } else {
+            // Hands full of something else: vanilla refuses the craft rather than dropping the
+            // result, so nothing is silently lost.
+            return;
+        }
+        menu.consumeIngredients();
+    }
+
+    /** Shift-click: grid to inventory, or inventory to grid. */
+    private void quickMoveCrafting(CraftingMenu menu, int slot) {
+        ItemStack inSlot = craftingSlot(menu, slot);
+        if (inSlot.isEmpty()) {
+            return;
+        }
+        if (menu.isGridSlot(slot)) {
+            setCraftingSlot(menu, slot, insert(inSlot));
+            return;
+        }
+        for (int i = 0; i < menu.gridSize(); i++) {
+            if (menu.grid(i).isEmpty()) {
+                menu.setGrid(i, inSlot);
+                setCraftingSlot(menu, slot, ItemStack.EMPTY);
+                return;
+            }
+        }
+    }
+
+    /** Returns the grid to the player. Called when the screen closes for any reason. */
+    private void closeCraftingMenu() {
+        CraftingMenu menu = craftingMenu;
+        if (menu == null) {
+            return;
+        }
+        craftingMenu = null;
+        for (int i = 0; i < menu.gridSize(); i++) {
+            ItemStack stack = menu.grid(i);
+            if (!stack.isEmpty()) {
+                // Given back, never destroyed: a closed crafting screen must not eat materials.
+                giveOrDrop(stack);
+            }
+        }
+        if (!carried.isEmpty()) {
+            giveOrDrop(carried);
+            carried = ItemStack.EMPTY;
+        }
+        sendInventory();
+    }
+
     public void handleContainerClick(int windowId, int slot, int button, int mode) {
+        CraftingMenu menu = craftingMenu;
+        if (menu != null && menu.windowId() == windowId) {
+            handleCraftingClick(menu, slot, button, mode);
+            return;
+        }
+
         OpenContainer container = openContainer;
         if (container == null || container.windowId() != windowId) {
             return;
@@ -845,6 +1100,10 @@ public final class Player extends Entity {
 
     /** Closes any open container, keeping whatever was on the cursor. */
     public void closeContainer() {
+        // A crafting grid closes the same way, and must give its contents back. The client sends
+        // one close packet whichever screen is open, so both paths hang off it.
+        closeCraftingMenu();
+
         OpenContainer container = openContainer;
         if (container == null) {
             return;
@@ -1229,6 +1488,11 @@ public final class Player extends Entity {
         // Likewise for anything that responds to being used. A lever has to flip rather than have a
         // block built over it, which is what happened before this existed.
         if (tryUseBlock(region, clickedX, clickedY, clickedZ)) {
+            sendBlockChangedAck(sequence);
+            return;
+        }
+
+        if (tryOpenCraftingTable(region, clickedX, clickedY, clickedZ)) {
             sendBlockChangedAck(sequence);
             return;
         }

@@ -32,14 +32,15 @@ before you judge it:
 - Propagating sky and block light, with no cross-region coordination needed
 - Block physics: sand and gravel fall as entities, water and lava flow and drain
 - Basic redstone: dust, levers, torches, repeaters and lamps
+- Crafting: all 932 vanilla crafting recipes, at a crafting table
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
 - **Block behaviour.** No random ticks or crafting. Gravity, fluids and basic redstone work;
   nothing else reacts.
 - **Mobs and combat.** Players, dropped items and falling blocks move; nothing else does.
-- **Survival mechanics.** Containers, the inventory and item entities are real, but there is no
-  crafting, and no stack accounting on placement — creative items are infinite and placing never
+- **Survival mechanics.** Containers, the inventory, item entities and crafting are real, but
+  there is no stack accounting on placement — creative items are infinite and placing never
   consumes one. Breaking a block does not drop it, which matches vanilla creative.
 - **Item entity persistence.** Drops live in memory only; see [Item entities](#item-entities).
 - **Block entity contents beyond containers.** Chests and their kin are sent to the client; signs,
@@ -572,6 +573,60 @@ creative.
 Add Entity carries no item stack, so a drop is invisible until its metadata arrives; the tracker
 sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
 partial pickup changes the count.
+
+## Crafting
+
+All 932 vanilla crafting recipes work at a crafting table: shaped and shapeless, ingredient tags,
+patterns matched anywhere in the grid and mirrored, shift-click to craft repeatedly.
+
+### Where the recipes come from
+
+This is the one piece of game data Mojang's `--reports` does not emit. Recipes live as ~1400
+individual files in the vanilla data pack **inside the jar**, so they are extracted rather than
+written from memory — the same rule as every other version-specific table here:
+
+```bash
+java -jar build/libs/quasar-0.1.0-all.jar --extract-recipes path/to/minecraft-1.21.4-client.jar
+```
+
+That writes `recipes.json`: 932 crafting recipes, with the other 438 (smelting, stonecutting,
+smithing) skipped because a crafting grid cannot produce them. Without the file, crafting is
+disabled and says so at startup. A hand-written partial table would be worse than none, because the
+missing half looks like a bug rather than an absence.
+
+**Item tags are flattened at extraction.** A recipe asks for `#minecraft:planks`, and tags nest —
+`#minecraft:logs` contains `#minecraft:logs_that_burn`. Resolving that once, at extraction, leaves
+the server's matcher dealing only in concrete item IDs.
+
+### Matching
+
+Shapeless recipes match by multiset. Shaped ones are trimmed to their occupied rectangle first, so a
+2×2 pattern works in any corner of a 3×3 grid, and are tried mirrored as well as normal — both are
+vanilla behaviour, and a player notices immediately when they are missing.
+
+A recipe naming an item this server does not know is dropped whole at load rather than half-loaded,
+so it can never match something it should not.
+
+### Honest limits
+
+- **Crafting table only.** The 2×2 grid in the player's own inventory is not implemented — and it is
+  not reachable anyway, because players are in creative, where that screen is the creative menu.
+- **No recipe book.** The client's book will not suggest anything; you have to know the recipe.
+- **No special recipes.** Firework, banner and shulker-dyeing recipes are code in vanilla rather
+  than data, and the 32 `crafting_transmute` recipes are excluded with them.
+- **No drag-painting inside the crafting window.** Containers support it; this does not yet, and an
+  unhandled click resyncs rather than desynchronises.
+
+### One bug worth recording
+
+Registries load in an order that matters: a recipe resolves every ingredient to an item ID *as it
+loads*, so loading recipes before items dropped all 932 as "unknown items" and left crafting quietly
+disabled — the server started fine and said `Loaded 0 crafting recipes`. It now loads items first,
+and the log line names the number dropped so the same failure cannot be silent again.
+
+Closing the screen — or disconnecting with a full grid — hands everything back. That second path was
+missing at first: the player was saved before the grid was returned, so logging out mid-craft saved
+an inventory that did not contain the materials, and they ceased to exist.
 
 ## Redstone
 

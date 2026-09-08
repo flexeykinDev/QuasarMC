@@ -141,6 +141,9 @@ public final class Protocol {
     public static final int ENTITY_TYPE_ITEM = Integer.getInteger("quasar.itemEntityType", 68);
 
     /** {@code minecraft:falling_block}. Its spawn packet's data field carries the block state ID. */
+    /** {@code minecraft:crafting} in the menu registry: the 3x3 crafting table screen. */
+    public static final int MENU_TYPE_CRAFTING = Integer.getInteger("quasar.craftingMenuType", 12);
+
     public static final int ENTITY_TYPE_FALLING_BLOCK =
             Integer.getInteger("quasar.fallingBlockEntityType", 49);
 

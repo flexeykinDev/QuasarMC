@@ -30,3 +30,6 @@ registries-*.json
 .claude/
 /run-client/
 /run-own/
+recipes.json
+/run-be/
+/run-craft/

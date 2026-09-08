@@ -69,7 +69,7 @@ vanilla worlds, at least partially.
 | ~~P0~~ **done** | Redstone (at least basic) | The hardest part. Needs a clear model of "this redstone component belongs to this region" -- and the answer was that no component needs an owner, because none is ever an object. Every value derives from one block's neighbours. See the README. |
 | P1 | Random ticks | Easy, but important for crop growth |
 | ~~P1~~ **done** | Block updates / neighbour updates | Landed with physics and redstone: a change wakes its neighbours and they re-derive themselves. Budgeted per region, so a cascade defers rather than exploding. |
-| P1 | Inventory and crafting | Survival is impossible without it |
+| ~~P1~~ **mostly done** | Inventory and crafting | All 932 vanilla crafting recipes at a crafting table, extracted from the jar since --reports does not emit them. The 2x2 inventory grid is not done and is unreachable in creative anyway. |
 | P2 | Furnaces, brewing stands, enchanting tables | Processing logic |
 | P2 | Signs, banners, heads | Small things, but they matter enormously to a server feeling alive |
 
@@ -165,7 +165,7 @@ concurrency), with a clean and documented architecture.
 1. ~~Light engine~~ — done
 2. ~~Block physics and water~~ — done
 3. ~~Basic redstone~~ — done
-4. Inventory and crafting
+4. ~~Inventory and crafting~~ — crafting table done
 5. Stable persistence
 6. A proper plugin/event API
 7. Mobs and combat, at a basic level

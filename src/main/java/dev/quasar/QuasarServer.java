@@ -6,6 +6,7 @@ import dev.quasar.config.ServerConfig;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.engine.Ownership;
 import dev.quasar.world.light.LightProperties;
+import dev.quasar.item.RecipeRegistry;
 import dev.quasar.world.block.BlockCollision;
 import dev.quasar.world.blockentity.BlockEntityTypes;
 import dev.quasar.world.redstone.RedstoneBlocks;
@@ -84,7 +85,11 @@ public final class QuasarServer {
         RedstoneBlocks.build();
         BlockEntityTypes.loadIfPresent();
         BlockCollision.build();
+        // Items before recipes: a recipe resolves every ingredient to an item ID as it loads, so
+        // loading them the other way round silently drops all 932 as "unknown items" and leaves
+        // crafting quietly disabled.
         ItemRegistry.loadIfPresent();
+        RecipeRegistry.loadIfPresent();
 
         RegionStorage storage = null;
         PlayerDataStorage players = null;
