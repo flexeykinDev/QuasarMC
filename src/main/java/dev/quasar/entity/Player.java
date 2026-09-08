@@ -681,6 +681,18 @@ public final class Player extends Entity {
 
     /** Handles a click in the crafting window. */
     private void handleCraftingClick(CraftingMenu menu, int slot, int button, int mode) {
+        // Mode 5 first, before the -999 check below. A drag is three packets -- start, one per
+        // slot swept, then end -- and the start and end both carry slot -999. Checking -999 first
+        // read each of them as "clicked outside the window" and threw an item on the floor, so
+        // every attempt to drag ingredients into the grid dropped two items. The container path
+        // has always tested mode 5 first; this one did not.
+        if (mode == 5) {
+            craftingDrag(menu, slot, button);
+            menu.refreshResult();
+            sendCraftingContent();
+            return;
+        }
+
         if (slot == -999) {
             if (!carried.isEmpty()) {
                 int thrown = button == 1 ? carried.count() : 1;
@@ -701,10 +713,93 @@ public final class Player extends Entity {
             quickMoveCrafting(menu, slot);
         } else if (mode == 0) {
             pickupCrafting(menu, slot, button);
+        } else if (mode == 2) {
+            hotbarSwapCrafting(menu, slot, button);
+        } else if (mode == 4) {
+            throwFromCrafting(menu, slot, button);
         }
 
         menu.refreshResult();
         sendCraftingContent();
+    }
+
+    /**
+     * Drag-painting inside the crafting window: sweep the held stack across several slots.
+     *
+     * <p>Same three-packet shape as the container version -- start, each slot swept, then end --
+     * and nothing is applied until the end, because the split depends on how many slots were swept
+     * in total.
+     */
+    private void craftingDrag(CraftingMenu menu, int slot, int button) {
+        switch (button) {
+            case 0, 4, 8 -> {
+                dragging = true;
+                dragKind = button / 4; // 0 left, 1 right, 2 middle
+                dragSlots.clear();
+            }
+            case 1, 5, 9 -> {
+                // The result slot can never be a drag target: it is an output, and dropping items
+                // into it would make them unreachable.
+                if (dragging && slot > CraftingMenu.RESULT_SLOT && slot < menu.totalSlots()) {
+                    dragSlots.add(slot);
+                }
+            }
+            case 2, 6, 10 -> {
+                if (dragging) {
+                    applyCraftingDrag(menu);
+                }
+                dragging = false;
+                dragSlots.clear();
+            }
+            default -> { }
+        }
+    }
+
+    private void applyCraftingDrag(CraftingMenu menu) {
+        if (carried.isEmpty() || dragSlots.isEmpty()) {
+            return;
+        }
+        List<Integer> targets = new ArrayList<>();
+        for (int slot : dragSlots) {
+            ItemStack existing = craftingSlot(menu, slot);
+            if (existing.isEmpty() || (existing.stacksWith(carried) && existing.spaceLeft() > 0)) {
+                targets.add(slot);
+            }
+        }
+        if (targets.isEmpty()) {
+            return;
+        }
+
+        int perSlot = switch (dragKind) {
+            case 0 -> carried.count() / targets.size(); // left: split as evenly as it divides
+            case 1 -> 1;                                // right: one apiece
+            default -> ItemStack.MAX_STACK;             // middle: fill, creative only
+        };
+        if (perSlot <= 0) {
+            return;
+        }
+
+        int remaining = carried.count();
+        for (int slot : targets) {
+            if (dragKind != 2 && remaining <= 0) {
+                break;
+            }
+            ItemStack existing = craftingSlot(menu, slot);
+            int space = existing.isEmpty() ? ItemStack.MAX_STACK : existing.spaceLeft();
+            int give = Math.min(perSlot, space);
+            if (dragKind != 2) {
+                give = Math.min(give, remaining);
+            }
+            if (give <= 0) {
+                continue;
+            }
+            setCraftingSlot(menu, slot,
+                    existing.isEmpty() ? carried.withCount(give) : existing.grow(give));
+            if (dragKind != 2) {
+                remaining -= give;
+            }
+        }
+        carried = dragKind == 2 ? carried : carried.withCount(remaining);
     }
 
     /**
@@ -790,6 +885,37 @@ public final class Player extends Entity {
         }
         menu.consumeIngredients();
         Log.debug("%s crafted %d x item %d", name, made.count(), made.itemId());
+    }
+
+    /** A number key over a slot: swap it with that hotbar slot, as vanilla does. */
+    private void hotbarSwapCrafting(CraftingMenu menu, int slot, int button) {
+        if (button < 0 || button > 8 || slot == CraftingMenu.RESULT_SLOT) {
+            return;
+        }
+        int hotbarSlot = HotbarKit.FIRST_HOTBAR_SLOT + button;
+        ItemStack inSlot = craftingSlot(menu, slot);
+        ItemStack inHotbar = inventorySlot(hotbarSlot);
+        setCraftingSlot(menu, slot, inHotbar);
+        setInventorySlot(hotbarSlot, inSlot);
+    }
+
+    /**
+     * Q over a slot in the crafting window.
+     *
+     * <p>Without this, Q inside the screen did nothing at all while the client predicted a throw --
+     * so the item appeared to vanish until the next resync put it back.
+     */
+    private void throwFromCrafting(CraftingMenu menu, int slot, int button) {
+        if (slot == CraftingMenu.RESULT_SLOT) {
+            return;
+        }
+        ItemStack inSlot = craftingSlot(menu, slot);
+        if (inSlot.isEmpty()) {
+            return;
+        }
+        int thrown = button == 1 ? inSlot.count() : 1;
+        dropItem(inSlot.withCount(thrown), "Q over a crafting slot");
+        setCraftingSlot(menu, slot, inSlot.shrink(thrown));
     }
 
     /** Shift-click: grid to inventory, or inventory to grid. */
