@@ -68,7 +68,7 @@ vanilla worlds, at least partially.
 | ~~P0~~ **done** | Block physics (gravel, sand, water, lava) | Region-local as planned, and no mailbox needed: one step moves one block, and adjacent loaded chunks are always the same region. Cascades are unbounded but advance a step at a time. See the README. |
 | ~~P0~~ **done** | Redstone (at least basic) | The hardest part. Needs a clear model of "this redstone component belongs to this region" -- and the answer was that no component needs an owner, because none is ever an object. Every value derives from one block's neighbours. See the README. |
 | P1 | Random ticks | Easy, but important for crop growth |
-| P1 | Block updates / neighbour updates | Carefully, without cascading cross-region explosions |
+| ~~P1~~ **done** | Block updates / neighbour updates | Landed with physics and redstone: a change wakes its neighbours and they re-derive themselves. Budgeted per region, so a cascade defers rather than exploding. |
 | P1 | Inventory and crafting | Survival is impossible without it |
 | P2 | Furnaces, brewing stands, enchanting tables | Processing logic |
 | P2 | Signs, banners, heads | Small things, but they matter enormously to a server feeling alive |
