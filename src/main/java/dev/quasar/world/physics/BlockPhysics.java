@@ -150,6 +150,20 @@ public final class BlockPhysics {
         }
     }
 
+    /**
+     * Whether this fluid may move into a cell.
+     *
+     * <p>Air yes, its own kind yes, the other fluid no. Letting them into each other's cells is
+     * what made a shoreline of water and lava churn: each pass would claim the cell back on its
+     * next tick and neither ever settled.
+     */
+    private boolean canFlowInto(int state, boolean lava) {
+        if (Blocks.isAir(state)) {
+            return true;
+        }
+        return lava ? Blocks.isLava(state) : Blocks.isWater(state);
+    }
+
     /** Whether a fluid of the given kind sits above or beside this position. */
     private boolean hasAdjacentFluid(int x, int y, int z, boolean lava) {
         int above = world.getBlockRaw(x, y + 1, z);
@@ -269,6 +283,23 @@ public final class BlockPhysics {
         int range = lava ? LAVA_RANGE : WATER_RANGE;
 
         boolean isThisFluid = lava ? Blocks.isLava(state) : Blocks.isWater(state);
+        boolean isOtherFluid = lava ? Blocks.isWater(state) : Blocks.isLava(state);
+
+        // Lava meeting water turns to stone, exactly as in vanilla: a source becomes obsidian and
+        // anything flowing becomes cobblestone. Without this the two fluids simply overwrite each
+        // other cell by cell, forever, because both are replaceable and each pass believes it is
+        // entitled to the space.
+        if (Blocks.isLava(state) && touchesWater(x, y, z)) {
+            int solidified = Blocks.fluidLevel(state) == 0 ? Blocks.OBSIDIAN : Blocks.COBBLESTONE;
+            setAndBroadcast(x, y, z, solidified);
+            onBlockChanged(x, y, z);
+            return;
+        }
+        if (isOtherFluid) {
+            // Leave the other fluid alone; its own pass owns that cell and will decide what
+            // happens to it.
+            return;
+        }
         if (!isThisFluid && !Blocks.isReplaceable(state)) {
             return;
         }
@@ -290,10 +321,15 @@ public final class BlockPhysics {
             return;
         }
         int desired = Blocks.fluidState(lava, target);
-        if (desired != state) {
-            setAndBroadcast(x, y, z, desired);
-            onBlockChanged(x, y, z);
+        if (desired == state) {
+            // Settled. Spreading anyway would re-queue the neighbours, which re-queue theirs, and
+            // a pool that has finished moving would be re-examined forever -- measured at a steady
+            // eighty-odd positions a tick that never fell, consuming the whole physics budget and
+            // starving lava of it entirely. Fluid work must stop when the fluid stops.
+            return;
         }
+        setAndBroadcast(x, y, z, desired);
+        onBlockChanged(x, y, z);
         spreadFrom(x, y, z, lava, target);
     }
 
@@ -334,10 +370,21 @@ public final class BlockPhysics {
         return best;
     }
 
+    /** Whether any of the six neighbours is water. */
+    private boolean touchesWater(int x, int y, int z) {
+        for (int face = 0; face < 6; face++) {
+            if (Blocks.isWater(world.getBlockRaw(
+                    x + FACE_X[face], y + FACE_Y[face], z + FACE_Z[face]))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Queues the places this fluid could move into next. */
     private void spreadFrom(int x, int y, int z, boolean lava, int level) {
         int belowState = world.getBlockRaw(x, y - 1, z);
-        if (Blocks.isReplaceable(belowState) && y - 1 >= world.minY()) {
+        if (canFlowInto(belowState, lava) && y - 1 >= world.minY()) {
             // Down first and unconditionally: fluid always prefers to fall, and only spreads
             // sideways when it cannot.
             enqueue(x, y - 1, z);

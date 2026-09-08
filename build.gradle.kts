@@ -1,4 +1,4 @@
-plugins {
+﻿plugins {
     java
     application
 }
@@ -38,6 +38,7 @@ tasks.test {
     useJUnitPlatform()
     testLogging {
         events("failed")
+
         showStackTraces = true
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
     }

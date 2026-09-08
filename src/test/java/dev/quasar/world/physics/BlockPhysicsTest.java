@@ -232,6 +232,50 @@ class BlockPhysicsTest {
                 "but not four, unlike water");
     }
 
+    // ---------------------------------------------------------------------- fluid interaction
+
+    @Test
+    void lavaMeetingWaterTurnsToStone() {
+        clearAbove();
+        // A lava source with water beside it. In vanilla a source becomes obsidian and anything
+        // flowing becomes cobblestone; without the rule the two simply overwrite each other cell
+        // by cell forever, because both are replaceable and each pass claims the space back.
+        world.setBlock(8, SURFACE + 1, 8, Blocks.fluidState(true, 0));
+        world.setBlock(9, SURFACE + 1, 8, Blocks.fluidState(false, 0));
+
+        BlockPhysics physics = region.physics();
+        physics.onBlockChanged(8, SURFACE + 1, 8);
+        drain(physics);
+
+        assertEquals(Blocks.OBSIDIAN, world.getBlockRaw(8, SURFACE + 1, 8),
+                "a lava source touching water becomes obsidian");
+    }
+
+    @Test
+    void flowingLavaMeetingWaterBecomesCobblestone() {
+        clearAbove();
+        world.setBlock(8, SURFACE + 1, 8, Blocks.fluidState(true, 2));
+        world.setBlock(9, SURFACE + 1, 8, Blocks.fluidState(false, 0));
+
+        BlockPhysics physics = region.physics();
+        physics.onBlockChanged(8, SURFACE + 1, 8);
+        drain(physics);
+
+        assertEquals(Blocks.COBBLESTONE, world.getBlockRaw(8, SURFACE + 1, 8),
+                "flowing lava touching water becomes cobblestone, not obsidian");
+    }
+
+    @Test
+    void aBlockCanBePlacedIntoLava() {
+        // Vanilla lets a block displace either fluid. Leaving lava out meant a player could not
+        // build into or over a lava pool at all -- every attempt was refused as "occupied".
+        assertTrue(Blocks.isReplaceable(Blocks.fluidState(true, 0)),
+                "a lava source must be replaceable");
+        assertTrue(Blocks.isReplaceable(Blocks.fluidState(true, 5)),
+                "and so must flowing lava");
+        assertTrue(Blocks.isReplaceable(Blocks.fluidState(false, 0)), "as water already was");
+    }
+
     // --------------------------------------------------------------------------------- helpers
 
     /** Runs enough ticks for any flow to settle, stepping the tick counter so both rates fire. */

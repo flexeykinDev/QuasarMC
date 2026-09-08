@@ -34,3 +34,8 @@ recipes.json
 /run-be/
 /run-craft/
 /run-persist/
+
+# JVM heap dumps. A runaway test once filled Gradle's output buffer until the test JVM
+# died, leaving three 800 MB dumps in the project root that git add -A swept straight into
+# a commit and GitHub refused at 100 MB.
+*.hprof

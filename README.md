@@ -788,8 +788,9 @@ positions per region tick, so a large flood defers instead of spiking.
 
 - **No source forming.** Two adjacent sources over a solid block do not create a third, so infinite
   water pools do not work.
-- **No fluid interaction.** Water meeting lava does not make stone, cobblestone or obsidian, and
-  nothing catches fire.
+- **Fluid interaction is partial.** Lava meeting water becomes obsidian (a source) or cobblestone
+  (flowing), as in vanilla. Nothing catches fire, and water flowing onto lava from above does not
+  make stone.
 - **Falling blocks do not break anything.** They land on the first non-replaceable block; they do
   not destroy torches or crops on the way, and they do not hurt anyone.
 - **Only sand and gravel fall.** Concrete powder and anvils behave the same way in vanilla and are

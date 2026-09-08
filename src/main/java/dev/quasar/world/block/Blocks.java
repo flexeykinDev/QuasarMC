@@ -110,13 +110,17 @@ public final class Blocks {
     /**
      * Whether a block can be built over.
      *
-     * <p>Air and water both count, matching vanilla: you can place a block into water and it simply
-     * displaces it. Restricting placement to air alone means that anywhere below sea level — which
-     * is most of a noise-generated world's spawn area — every placement is silently refused.
+     * <p>Air and both fluids count, matching vanilla: a block placed into water or lava simply
+     * displaces it. Restricting placement to air alone means that anywhere below sea level -- which
+     * is most of a noise-generated world's spawn area -- every placement is silently refused, and
+     * leaving lava out meant a player could not build into or over a lava pool at all.
      */
     public static boolean isReplaceable(int stateId) {
-        return isAir(stateId) || isWater(stateId);
+        return isAir(stateId) || isFluid(stateId);
     }
+
+    public static final int COBBLESTONE = id("cobblestone", 14);
+    public static final int OBSIDIAN = id("obsidian", 2397);
 
     private static int id(String key, int fallback) {
         String raw = OVERRIDES.getProperty(key);
