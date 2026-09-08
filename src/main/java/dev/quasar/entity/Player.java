@@ -1776,8 +1776,12 @@ public final class Player extends Entity {
 
                 server.world().setBlock(x, y, z, placed);
                 createBlockEntityIfNeeded(placed, x, y, z);
+                // Noted, not opened yet. The editor has to come after the block update below,
+                // or the client is told to edit a sign at a position it does not yet know holds
+                // one -- it opens the screen against nothing, closes it immediately, and sends
+                // back the empty text that was never typed.
                 if (Signs.isSign(placed)) {
-                    openSignEditor(x, y, z, placed);
+                    pendingSignEditor = new int[] {x, y, z, placed};
                 }
                 refreshConnections(region, x, y, z);
                 // Read back rather than logging `placed`: connection updates run after the write,
@@ -1793,7 +1797,21 @@ public final class Player extends Entity {
             }
         }
         finishEdit(region, x, y, z, sequence);
+
+        // Now that the client has been told the block is there, hand it the sign's block entity
+        // and open the editor.
+        if (pendingSignEditor != null) {
+            int[] sign = pendingSignEditor;
+            pendingSignEditor = null;
+            openSignEditor(region, sign[0], sign[1], sign[2], sign[3]);
+        }
     }
+
+    /**
+     * A sign placed this tick, waiting for its editor to be opened once the block update has gone
+     * out. Cleared as soon as it is used.
+     */
+    private int[] pendingSignEditor;
 
     /**
      * Closes out an edit: acknowledge it, then state the truth about that position.
@@ -2028,16 +2046,23 @@ public final class Player extends Entity {
      * <p>Called straight after the sign block is placed. Without the editor a sign is a blank plank:
      * there is no other way for a player to enter the text.
      */
-    private void openSignEditor(int x, int y, int z, int blockState) {
+    private void openSignEditor(Region region, int x, int y, int z, int blockState) {
         Chunk chunk = server.world().chunkAt(x >> 4, z >> 4);
         if (chunk == null) {
             return;
         }
-        chunk.setBlockEntity(x & 15, y, z & 15, Signs.newBlockEntity(blockState, x, y, z));
+        Nbt.NbtCompound entity = Signs.newBlockEntity(blockState, x, y, z);
+        chunk.setBlockEntity(x & 15, y, z & 15, entity);
+
+        // The block entity first: the editor edits it, and a client that has not been given one
+        // has nothing to open the screen against.
+        broadcastBlockEntity(region, x, y, z, entity);
+
         connection.send(Protocol.PLAY_CLIENTBOUND_OPEN_SIGN_EDITOR, buf -> {
             ByteBufs.writeBlockPos(buf, x, y, z);
             buf.writeBoolean(true); // editing the front, which is the side just placed
         });
+        Log.debug("%s is editing a sign at %d,%d,%d", name, x, y, z);
     }
 
     /**

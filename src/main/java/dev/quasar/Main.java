@@ -167,10 +167,14 @@ public final class Main {
                         Log.info("chunk %d,%d is not loaded", x >> 4, z >> 4);
                         break;
                     }
-                    Log.info("%d,%d,%d block=%d sky=%d state=%d (chunk %d,%d)", x, y, z,
+                    int state = chunk.getBlock(x & 15, y, z & 15);
+                    var described = dev.quasar.world.block.BlockStateRegistry.byId(state);
+                    // The name, not just the number: "state=102" answers nothing on its own, and
+                    // "is that lava or water?" is exactly the question this gets asked for.
+                    Log.info("%d,%d,%d block=%d sky=%d state=%d %s (chunk %d,%d)", x, y, z,
                             chunk.light().block(x & 15, y, z & 15),
                             chunk.light().sky(x & 15, y, z & 15),
-                            chunk.getBlock(x & 15, y, z & 15), x >> 4, z >> 4);
+                            state, described == null ? "?" : described.name(), x >> 4, z >> 4);
                 } catch (NumberFormatException e) {
                     Log.info("usage: light <x> <y> <z>");
                 }

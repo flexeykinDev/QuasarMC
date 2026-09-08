@@ -241,6 +241,56 @@ class LightEngineTest {
                 "and the block beside it, or the room is dark with a torch burning in it");
     }
 
+    /**
+     * A torch survives a save and reload, and still lights the room.
+     *
+     * <p>The reported complaint was darkness after a rejoin. The in-memory test above proves the
+     * lighting maths; this one puts the chunk through the actual Anvil codec first, because a
+     * rejoin reads blocks back from disk and rebuilds the heightmap wholesale rather than
+     * maintaining it block by block. If a torch were lost or the heightmap came back wrong, the
+     * room would be dark with a torch burning in it -- and nothing would report an error.
+     */
+    @Test
+    void aTorchStillLightsTheRoomAfterASaveAndReload() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                BlockStateRegistry.hasFullTable(), "needs blocks.json");
+
+        Chunk original = generate(0, 0);
+        for (int x = 4; x <= 8; x++) {
+            for (int z = 4; z <= 8; z++) {
+                for (int y = SURFACE + 1; y <= SURFACE + 3; y++) {
+                    original.setBlock(x, y, z, Blocks.STONE);
+                }
+            }
+        }
+        for (int x = 5; x <= 7; x++) {
+            for (int z = 5; z <= 7; z++) {
+                original.setBlock(x, SURFACE + 1, z, Blocks.AIR);
+                original.setBlock(x, SURFACE + 2, z, Blocks.AIR);
+            }
+        }
+        int torch = BlockStateRegistry.defaultStateForBlock("minecraft:torch");
+        original.setBlock(6, SURFACE + 1, 6, torch);
+
+        // Through the real codec, exactly as a rejoin does.
+        Chunk reloaded = dev.quasar.world.storage.AnvilChunkCodec.fromNbt(
+                dev.quasar.world.storage.AnvilChunkCodec.toNbt(original), 0, 0, -64, 384);
+        assertTrue(reloaded != null, "the chunk should round-trip through Anvil");
+        assertEquals(torch, reloaded.getBlock(6, SURFACE + 1, 6),
+                "the torch itself must survive the save");
+
+        world.putChunkForTesting(reloaded);
+        LightEngine.lightNewChunk(reloaded);
+        LightEngine engine = world.lightEngineForTesting();
+        engine.seedChunk(reloaded);
+        engine.processQueue(1_000_000);
+
+        assertEquals(14, reloaded.light().block(6, SURFACE + 1, 6),
+                "a reloaded torch must still be lit");
+        assertTrue(reloaded.light().block(7, SURFACE + 1, 6) > 0,
+                "and must still light the room around it");
+    }
+
     // ------------------------------------------------------------------------------ properties
 
     @Test
@@ -254,6 +304,21 @@ class LightEngineTest {
         assertTrue(chest > 0, "chest state should resolve");
         assertEquals(false, LightProperties.blocksLight(chest),
                 "a chest is not a full cube and must not occlude");
+    }
+
+    @Test
+    void lavaGlowsAndDoesNotBlockLight() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                BlockStateRegistry.hasFullTable(), "needs blocks.json");
+        LightProperties.build();
+
+        // Every level, not just the source: a pool of lava that does not glow is the most obvious
+        // thing a light engine can get wrong, and flowing lava is most of any pool.
+        for (int state = Blocks.LAVA_STATE_MIN; state <= Blocks.LAVA_STATE_MAX; state++) {
+            assertEquals(15, LightProperties.emission(state), "lava state " + state + " should glow");
+            assertEquals(false, LightProperties.blocksLight(state),
+                    "lava state " + state + " should not occlude");
+        }
     }
 
     @Test

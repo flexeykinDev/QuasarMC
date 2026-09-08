@@ -162,10 +162,15 @@ public final class LightProperties {
             }
         }
 
-        // Water is a range of states and must let light through whatever the level property says,
-        // or every ocean floor goes black.
+        // Fluids are ranges of states and must let light through whatever the level property
+        // says, or every ocean floor goes black. Lava additionally emits at every level: a pool of
+        // it that does not glow is the single most obvious thing a light engine can get wrong.
         for (int id = Blocks.WATER_STATE_MIN; id <= Blocks.WATER_STATE_MAX && id <= max; id++) {
             opaque[id] = false;
+        }
+        for (int id = Blocks.LAVA_STATE_MIN; id <= Blocks.LAVA_STATE_MAX && id <= max; id++) {
+            opaque[id] = false;
+            emission[id] = 15;
         }
         opaque[Blocks.AIR] = false;
 
