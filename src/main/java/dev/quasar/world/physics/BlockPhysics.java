@@ -3,6 +3,7 @@ package dev.quasar.world.physics;
 import dev.quasar.engine.Region;
 import dev.quasar.entity.FallingBlockEntity;
 import dev.quasar.world.World;
+import dev.quasar.world.block.BlockCollision;
 import dev.quasar.world.block.Blocks;
 
 import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
@@ -230,8 +231,11 @@ public final class BlockPhysics {
         if (!Blocks.fallsUnderGravity(state) || y <= world.minY()) {
             return;
         }
+        // Passable, not merely replaceable: sand falls through redstone dust, torches and plants
+        // in vanilla and destroys them. Resting on a wire instead is how a floating sand block ends
+        // up sitting on a circuit.
         int below = world.getBlockRaw(x, y - 1, z);
-        if (!Blocks.isReplaceable(below)) {
+        if (!BlockCollision.isPassable(below)) {
             return;
         }
 

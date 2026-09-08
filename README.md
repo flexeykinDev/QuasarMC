@@ -42,6 +42,8 @@ before you judge it:
   crafting, and no stack accounting on placement — creative items are infinite and placing never
   consumes one. Breaking a block does not drop it, which matches vanilla creative.
 - **Item entity persistence.** Drops live in memory only; see [Item entities](#item-entities).
+- **Block entity contents beyond containers.** Chests and their kin are sent to the client; signs,
+  banners and spawners have no modelled data of their own.
 - **Furnaces, brewing stands, enchanting tables.** Containers with processing logic, not just slots.
 - **Reading arbitrary vanilla worlds** without a `blocks.json` to hand. Worlds are Anvil, but the
   built-in block table only covers blocks this server itself uses. See
@@ -605,6 +607,28 @@ A block change wakes everything within two blocks, and the check for "is any of 
 constantly. Doing that with name comparisons cost a full TPS on a world containing no redstone at
 all. Both the wake test and the chunk-adoption scan now index a per-state `boolean[]`, and a
 redstone-free world is back to 20.0 TPS at 2.85 MSPT with 1734 chunks loaded.
+
+### Four bugs real play found that automation did not
+
+All four came from someone building on the server, and none of them could have been caught by an
+assertion on the server's own state — which is the point of keeping a real client in the loop.
+
+1. **Falling blocks were invisible.** Gravity worked perfectly server-side; the entity tracker had
+   an allow-list of entity types and falling blocks were not on it, so sand appeared to vanish and
+   silently reappear somewhere below. The server log said `lost its support and is falling` while
+   the player saw a block delete itself.
+2. **Redstone rendered as unconnected dots.** Wire carries `power` *and* four connection
+   properties, and only `power` was ever set. Every level was right and the circuit was inert to
+   look at, because a wire with all four sides `none` draws as an isolated speck.
+3. **Chests were invisible.** The chunk packet sent a hard-coded zero block entities. A chest's
+   block model is empty — the whole chest is drawn by a block-entity renderer — so a chest in a
+   loaded chunk was a hole in the air that still opened when clicked.
+4. **Chests rendered black once visible.** Fixing (3) exposed this immediately: the light engine
+   treats anything not in its transparency list as a full cube, so a chest zeroed the sky light at
+   its own position — the exact value its renderer uses.
+
+Sand also rested on redstone dust instead of falling through it, which is why gravity now asks
+`BlockCollision.isPassable` rather than "is this air or water".
 
 ### Honest limits
 

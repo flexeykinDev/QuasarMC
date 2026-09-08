@@ -16,6 +16,7 @@ import dev.quasar.world.block.BlockConnections;
 import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
+import dev.quasar.world.blockentity.BlockEntityTypes;
 import dev.quasar.world.redstone.RedstoneBlocks;
 import dev.quasar.world.blockentity.ContainerIo;
 import dev.quasar.world.blockentity.Containers;
@@ -321,7 +322,7 @@ public final class Player extends Entity {
                 sections.release();
             }
 
-            ByteBufs.writeVarInt(buf, 0); // no block entities
+            writeBlockEntities(buf, chunk);
             chunk.writeLight(buf);
         });
     }
@@ -346,6 +347,58 @@ public final class Player extends Entity {
             ByteBufs.writeVarInt(buf, chunk.z());
             chunk.writeLight(buf);
         });
+    }
+
+    /**
+     * Writes the chunk's block entities: packed local XZ, Y, registry type, then the NBT.
+     *
+     * <p>Sending none of them was not a cosmetic shortcut. A chest's block model is empty -- the
+     * whole chest is drawn by a block-entity renderer -- so a chest in a chunk that arrives without
+     * its block entity is an invisible hole that still opens when you click it.
+     *
+     * <p>Entries whose type is unknown are skipped rather than guessed. A wrong registry ID here
+     * desynchronises the rest of the packet, which surfaces as a decode failure in something
+     * unrelated.
+     */
+    private void writeBlockEntities(ByteBuf buf, Chunk chunk) {
+        if (!BlockEntityTypes.available() || chunk.blockEntityCount() == 0) {
+            ByteBufs.writeVarInt(buf, 0);
+            return;
+        }
+
+        // Counted first, because the count is length-prefixed and entries can be skipped.
+        List<int[]> positions = new ArrayList<>();
+        List<Nbt.NbtCompound> payloads = new ArrayList<>();
+        for (var entry : chunk.blockEntityEntries()) {
+            Nbt.NbtCompound data = entry.getValue();
+            if (!(data.get("id") instanceof Nbt.NbtString id)) {
+                continue;
+            }
+            int type = BlockEntityTypes.idFor(id.value());
+            if (type < 0) {
+                continue;
+            }
+            int key = entry.getIntKey();
+            positions.add(new int[] {
+                    chunk.blockEntityLocalX(key), chunk.blockEntityY(key),
+                    chunk.blockEntityLocalZ(key), type});
+            payloads.add(data);
+        }
+
+        if (!positions.isEmpty()) {
+            // Trace, not debug: this fires for every chunk carrying a block entity, for every
+            // player it streams to, which buries everything else in a built-up world.
+            Log.trace("sent %d block entit%s with chunk %d,%d to %s", positions.size(),
+                    positions.size() == 1 ? "y" : "ies", chunk.x(), chunk.z(), name);
+        }
+        ByteBufs.writeVarInt(buf, positions.size());
+        for (int i = 0; i < positions.size(); i++) {
+            int[] position = positions.get(i);
+            buf.writeByte(((position[0] & 15) << 4) | (position[2] & 15));
+            buf.writeShort(position[1]);
+            ByteBufs.writeVarInt(buf, position[3]);
+            Nbt.writeNetwork(buf, payloads.get(i));
+        }
     }
 
     private void tickKeepAlive() {
@@ -895,7 +948,13 @@ public final class Player extends Entity {
             if (entity == this || entity.isRemoved()) {
                 continue;
             }
-            if (!(entity instanceof Player) && !(entity instanceof ItemEntity)) {
+            // An allow-list of what can be sent, because spawnEntity has to know the entity's
+            // protocol type. Falling blocks were missing from it, so gravity worked perfectly on
+            // the server while a player saw sand simply vanish and silently reappear somewhere
+            // below -- the entity was never spawned on the client at all.
+            if (!(entity instanceof Player)
+                    && !(entity instanceof ItemEntity)
+                    && !(entity instanceof FallingBlockEntity)) {
                 continue;
             }
             double dx = entity.x() - x;

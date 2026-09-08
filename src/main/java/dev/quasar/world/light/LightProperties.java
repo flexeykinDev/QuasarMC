@@ -16,10 +16,15 @@ import java.util.Set;
  * not from the side, a fence barely blocks it at all. This server has no shapes, so it makes a
  * cruder call -- a curated set of block names lets light through and everything else stops it.
  *
- * <p>That is wrong in visible ways, and it is worth being precise about which: light does not leak
- * through a slab or a fence the way it should, so a staircase lit from above is darker here than in
- * vanilla. It is right about the thing that matters most, which is that caves are dark, overhangs
- * cast shade, and torches light a room.
+ * <p>That is wrong in visible ways, and it is worth being precise about which. Slabs and stairs are
+ * treated as solid, so a staircase lit from above is darker here than in vanilla -- deliberately, as
+ * the alternative is daylight flooding through every slab roof. Blocks that plainly are not cubes,
+ * including chests and fences, do let light past. It is right about the thing that matters most,
+ * which is that caves are dark, overhangs cast shade, and torches light a room.
+
+ * <p>Getting a chest wrong here is not subtle: a chest is drawn by a block-entity renderer using the
+ * light value at its own position, so listing it as opaque zeroes that value and the chest renders
+ * almost black in full daylight.
  *
  * <p>Emission is a curated table too. Mojang's generated block report carries every block state and
  * its properties but <em>not</em> luminance, so there is nothing to read it from; the alternative
@@ -45,12 +50,27 @@ public final class LightProperties {
             "sugar_cane", "vine", "glow_lichen", "cobweb",
             "lever", "tripwire", "tripwire_hook", "redstone_wire",
             "sunflower", "lilac", "rose_bush", "peony", "seagrass", "tall_seagrass",
-            "kelp", "kelp_plant", "torchflower", "pitcher_plant");
+            "kelp", "kelp_plant", "torchflower", "pitcher_plant",
+            // Blocks that are not full cubes and so do not occlude in vanilla. Chests matter more
+            // than the rest: a chest is drawn by a block-entity renderer using the light value at
+            // its own position, so treating it as opaque zeroes that value and the chest renders
+            // almost black in broad daylight.
+            "chest", "trapped_chest", "ender_chest", "hopper", "enchanting_table",
+            "brewing_stand", "cauldron", "water_cauldron", "lava_cauldron", "anvil",
+            "chipped_anvil", "damaged_anvil", "grindstone", "stonecutter", "lectern",
+            "bell", "conduit", "beacon", "end_portal_frame", "flower_pot", "decorated_pot",
+            "composter", "scaffolding", "iron_bars", "lightning_rod");
 
     /** Prefixes and suffixes that stand in for whole families, so the list above stays readable. */
     private static final String[] TRANSPARENT_SUFFIXES = {
             "_glass", "_glass_pane", "_sapling", "_button", "_pressure_plate",
-            "_candle", "_torch", "_carpet", "_banner", "_sign", "_hanging_sign"
+            "_candle", "_torch", "_carpet", "_banner", "_sign", "_hanging_sign",
+            "_bed", "_fence", "_fence_gate", "_wall", "_bars", "_pane", "_head", "_skull",
+            "_trapdoor", "_door", "_flower_pot"
+            // Deliberately NOT slabs, stairs or shulker boxes. Slabs and stairs are what people
+            // roof and floor with, and treating them as non-occluding floods the inside of any
+            // such building with daylight -- a far more visible wrong than the slight over-darkness
+            // of treating them as solid. A shulker box is a full cube and occludes properly.
     };
 
     /** Vanilla luminance for the blocks that actually light a room. */

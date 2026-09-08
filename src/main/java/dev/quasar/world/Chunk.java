@@ -186,6 +186,18 @@ public final class Chunk {
         return blockEntities.values();
     }
 
+    /** Every block entity with its packed local position, for the chunk packet. */
+    public Iterable<Int2ObjectOpenHashMap.Entry<Nbt.NbtCompound>> blockEntityEntries() {
+        return blockEntities.int2ObjectEntrySet();
+    }
+
+    /** Unpacks the key used by {@link #blockEntityEntries()}. */
+    public int blockEntityLocalX(int key) { return key & 15; }
+
+    public int blockEntityLocalZ(int key) { return (key >> 4) & 15; }
+
+    public int blockEntityY(int key) { return (key >> 8) + minY; }
+
     public int blockEntityCount() {
         return blockEntities.size();
     }

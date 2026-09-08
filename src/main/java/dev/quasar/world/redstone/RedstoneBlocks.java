@@ -119,6 +119,50 @@ public final class RedstoneBlocks {
         return with(state, "power", String.valueOf(Math.max(0, Math.min(MAX_POWER, power))));
     }
 
+    /** Property names for a wire's four sides, in the order used by {@link #FACE_X}. */
+    private static final String[] SIDE_PROPERTY = {null, null, "north", "south", "west", "east"};
+
+    /**
+     * Sets a wire's four connection properties at once.
+     *
+     * <p>Without these a wire is all {@code none}, which the client renders as an isolated dot --
+     * so a perfectly working circuit looks like a scattering of unconnected specks. The power
+     * property alone is invisible; the connections are what make wire look like wire.
+     *
+     * @param sides values indexed by face, each "up", "side" or "none"
+     */
+    public static int withDustConnections(int state, String[] sides) {
+        BlockStateRegistry.State s = BlockStateRegistry.byId(state);
+        if (s == null) {
+            return state;
+        }
+        Map<String, String> properties = new HashMap<>(s.properties());
+        for (int face = FACE_NORTH; face <= FACE_EAST; face++) {
+            properties.put(SIDE_PROPERTY[face], sides[face]);
+        }
+        int found = BlockStateRegistry.idFor(s.name(), properties);
+        return found >= 0 ? found : state;
+    }
+
+    public static String dustConnection(int state, int face) {
+        String value = propsOf(state).get(SIDE_PROPERTY[face]);
+        return value == null ? "none" : value;
+    }
+
+    /** Whether a block a wire is pointed at should be treated as something to connect to. */
+    public static boolean connectsToDust(int state, int fromFace) {
+        if (isDust(state) || isRedstoneBlock(state) || isLever(state) || isTorch(state)) {
+            return true;
+        }
+        if (isRepeater(state)) {
+            // Only along its own axis: a repeater beside a wire, facing across it, is not wired to
+            // it, and drawing a connection there would misrepresent the circuit.
+            int facing = repeaterFacingFace(state);
+            return facing == fromFace || facing == opposite(fromFace);
+        }
+        return false;
+    }
+
     // --------------------------------------------------------------------------------- sources
 
     public static boolean isLever(int state) {

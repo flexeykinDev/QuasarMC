@@ -171,6 +171,42 @@ class RedstoneEngineTest {
                 "powering the block a torch hangs on must switch the torch off");
     }
 
+    // ------------------------------------------------------------------------------ rendering
+
+    /**
+     * Connection shape, which is what makes wire look like wire.
+     *
+     * <p>Power alone is invisible. A wire left with all four sides "none" renders as an isolated
+     * dot, so a working circuit looked like a scattering of unconnected specks -- the engine was
+     * right and the picture was wrong, which is the kind of bug a server-side assertion never sees.
+     */
+    @Test
+    void wireConnectsToTheWireBesideIt() {
+        layWire(2, 4);
+        drive();
+
+        int middle = world.getBlockRaw(3, WIRE_Y, 8);
+        assertEquals("side", RedstoneBlocks.dustConnection(middle, RedstoneBlocks.FACE_WEST),
+                "wire should join the wire to its west");
+        assertEquals("side", RedstoneBlocks.dustConnection(middle, RedstoneBlocks.FACE_EAST),
+                "and the one to its east");
+    }
+
+    @Test
+    void aLoneWireStaysADot() {
+        int dust = state("minecraft:redstone_wire",
+                Map.of("east", "none", "north", "none", "power", "0", "south", "none",
+                        "west", "none"));
+        place(8, WIRE_Y, 8, dust);
+        drive();
+
+        int lone = world.getBlockRaw(8, WIRE_Y, 8);
+        for (int face = 2; face < 6; face++) {
+            assertEquals("none", RedstoneBlocks.dustConnection(lone, face),
+                    "a wire with nothing beside it should not draw a connection");
+        }
+    }
+
     // -------------------------------------------------------------------------------- geometry
 
     /**

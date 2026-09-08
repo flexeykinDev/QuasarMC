@@ -104,6 +104,27 @@ class BlockPhysicsTest {
                 "an unloaded chunk must read as solid, not as air");
     }
 
+    @Test
+    void sandFallsThroughRedstoneDustRatherThanRestingOnIt() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                dev.quasar.world.redstone.RedstoneBlocks.available(), "needs blocks.json");
+        dev.quasar.world.block.BlockCollision.build();
+
+        int dust = BlockStateRegistry.defaultStateForBlock("minecraft:redstone_wire");
+        world.setBlock(8, SURFACE + 1, 8, dust);
+        world.setBlock(8, SURFACE + 2, 8, Blocks.SAND);
+
+        int[] spawned = {-1};
+        world.setFallingBlockSpawner((s2, x, y, z) -> spawned[0] = s2);
+
+        BlockPhysics physics = region.physics();
+        physics.onBlockChanged(8, SURFACE + 2, 8);
+        physics.process(region, 0, 4096);
+
+        assertEquals(Blocks.SAND, spawned[0],
+                "dust has no collision box, so sand should fall through it rather than perch on it");
+    }
+
     // --------------------------------------------------------------------------------- fluids
 
     @Test

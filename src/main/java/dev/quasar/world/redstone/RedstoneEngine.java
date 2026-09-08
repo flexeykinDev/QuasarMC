@@ -261,10 +261,65 @@ public final class RedstoneEngine {
         }
 
         target = Math.max(0, Math.min(RedstoneBlocks.MAX_POWER, target));
-        if (target != RedstoneBlocks.dustPower(state)) {
-            setAndBroadcast(x, y, z, RedstoneBlocks.withDustPower(state, target));
-            onBlockChanged(x, y, z);
+
+        int desired = RedstoneBlocks.withDustPower(state, target);
+        desired = RedstoneBlocks.withDustConnections(desired, dustConnections(x, y, z));
+
+        if (desired != state) {
+            setAndBroadcast(x, y, z, desired);
+            // Only a power change can affect anything else. A connection change is purely how the
+            // wire draws itself, so re-waking the neighbourhood for one would loop: every wire
+            // would keep re-queueing its neighbours to redraw them.
+            if (target != RedstoneBlocks.dustPower(state)) {
+                onBlockChanged(x, y, z);
+            }
         }
+    }
+
+    /**
+     * Which way a wire visually joins on each of its four sides.
+     *
+     * <p>Vanilla's shape rules, and they are what turn a line of dust into a line rather than a row
+     * of dots: a wire joins to anything redstone beside it, climbs to a wire one block up when
+     * nothing solid caps it, and drops to a wire one block down when nothing roofs that one.
+     */
+    private String[] dustConnections(int x, int y, int z) {
+        String[] sides = {"none", "none", "none", "none", "none", "none"};
+        int connections = 0;
+        boolean cappedAbove = isSolid(world.getBlockRaw(x, y + 1, z));
+
+        for (int face = 2; face < 6; face++) {
+            int nx = x + RedstoneBlocks.FACE_X[face];
+            int nz = z + RedstoneBlocks.FACE_Z[face];
+
+            int beside = world.getBlockRaw(nx, y, nz);
+            if (RedstoneBlocks.connectsToDust(beside, face)) {
+                sides[face] = "side";
+            } else if (!cappedAbove && RedstoneBlocks.isDust(world.getBlockRaw(nx, y + 1, nz))) {
+                sides[face] = "up";
+            } else if (!isSolid(beside)
+                    && RedstoneBlocks.isDust(world.getBlockRaw(nx, y - 1, nz))) {
+                sides[face] = "side";
+            }
+            if (!"none".equals(sides[face])) {
+                connections++;
+            }
+        }
+
+        // A wire with exactly one connection still draws as a straight line in vanilla, extending
+        // through to the opposite side. Leaving it as a single stub looks like a broken wire.
+        if (connections == 1) {
+            for (int face = 2; face < 6; face++) {
+                if (!"none".equals(sides[face])) {
+                    int back = RedstoneBlocks.opposite(face);
+                    if ("none".equals(sides[back])) {
+                        sides[back] = "side";
+                    }
+                    break;
+                }
+            }
+        }
+        return sides;
     }
 
     /**

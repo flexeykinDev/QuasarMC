@@ -6,6 +6,8 @@ import dev.quasar.config.ServerConfig;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.engine.Ownership;
 import dev.quasar.world.light.LightProperties;
+import dev.quasar.world.block.BlockCollision;
+import dev.quasar.world.blockentity.BlockEntityTypes;
 import dev.quasar.world.redstone.RedstoneBlocks;
 import dev.quasar.engine.RegionScheduler;
 import dev.quasar.entity.ItemEntity;
@@ -80,6 +82,8 @@ public final class QuasarServer {
         // otherwise be built against the built-in handful and miss every state blocks.json adds.
         LightProperties.build();
         RedstoneBlocks.build();
+        BlockEntityTypes.loadIfPresent();
+        BlockCollision.build();
         ItemRegistry.loadIfPresent();
 
         RegionStorage storage = null;

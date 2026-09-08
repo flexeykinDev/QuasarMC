@@ -63,7 +63,7 @@ public final class FallingBlockEntity extends Entity {
         }
 
         int below = server.world().getBlock((int) Math.floor(x), belowY, (int) Math.floor(z));
-        if (Blocks.isReplaceable(below)) {
+        if (dev.quasar.world.block.BlockCollision.isPassable(below)) {
             motionY = Math.max(motionY - GRAVITY, TERMINAL_VELOCITY);
             y += motionY;
             return;
@@ -83,7 +83,7 @@ public final class FallingBlockEntity extends Entity {
         int blockZ = (int) Math.floor(z);
 
         int existing = server.world().getBlock(blockX, landingY, blockZ);
-        if (Blocks.isReplaceable(existing)) {
+        if (dev.quasar.world.block.BlockCollision.isPassable(existing)) {
             server.world().setBlock(blockX, landingY, blockZ, blockState);
             region.broadcastBlockUpdate(blockX, landingY, blockZ, blockState);
         } else {

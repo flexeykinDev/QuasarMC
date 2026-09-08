@@ -199,6 +199,42 @@ class LightEngineTest {
                 "the deferred work still finished the job");
     }
 
+    // ------------------------------------------------------------------------------ properties
+
+    @Test
+    void chestsDoNotOccludeLight() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                BlockStateRegistry.hasFullTable(), "needs blocks.json");
+
+        // A chest is drawn by a block-entity renderer using the light at its own position. Treating
+        // it as opaque zeroes that value, and the chest renders almost black in full daylight.
+        int chest = BlockStateRegistry.defaultStateForBlock("minecraft:chest");
+        assertTrue(chest > 0, "chest state should resolve");
+        assertEquals(false, LightProperties.blocksLight(chest),
+                "a chest is not a full cube and must not occlude");
+    }
+
+    @Test
+    void slabsAndStairsStillOccludeLight() {
+        org.junit.jupiter.api.Assumptions.assumeTrue(
+                BlockStateRegistry.hasFullTable(), "needs blocks.json");
+
+        // The deliberate half of the approximation: these are what people roof with, and letting
+        // light past them floods the inside of every such building with daylight.
+        for (String name : new String[] {"minecraft:stone_slab", "minecraft:oak_stairs"}) {
+            int state = BlockStateRegistry.defaultStateForBlock(name);
+            assertTrue(LightProperties.blocksLight(state), name + " should still occlude");
+        }
+    }
+
+    @Test
+    void theTransparencyTableLoadsAtAll() {
+        // Set.of throws on a duplicate entry, so a careless addition to the list is not a subtly
+        // wrong lookup -- it is a class-initialiser failure that takes the whole server down.
+        LightProperties.build();
+        assertEquals(false, LightProperties.blocksLight(Blocks.AIR));
+    }
+
     // ---------------------------------------------------------------------------------- storage
 
     @Test
