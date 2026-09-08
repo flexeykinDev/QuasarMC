@@ -29,3 +29,4 @@ registries-*.json
 .vscode/
 .claude/
 /run-client/
+/run-own/

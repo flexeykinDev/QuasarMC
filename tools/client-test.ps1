@@ -313,8 +313,11 @@ if ($Scenario -eq 'full') {
     Write-Host '  looking down at the ground'
     Look 0 320
 
+    # A short click, not a hold. Creative breaks instantly and keeps breaking while the button is
+    # down, so a 600ms hold dug a three-block hole; the next right-click then had no reachable face
+    # to place against and the run failed for a reason unrelated to placement.
     Write-Host '  breaking'
-    Click 'LEFT' 600
+    Click 'LEFT' 90
 
     Write-Host '  placing'
     Click 'RIGHT'

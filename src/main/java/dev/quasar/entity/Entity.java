@@ -68,15 +68,39 @@ public abstract class Entity {
 
     public void markRemoved() { this.removed = true; }
 
+    /**
+     * Moves this entity.
+     *
+     * <p>Guarded because position is read by every tracker in the region to build movement packets,
+     * and by {@link dev.quasar.engine.RegionManager} to decide which region should own the entity.
+     * A network thread writing it directly -- rather than through {@code Player.submit} -- would
+     * tear those reads, and the symptom would be a player who rubber-bands or who is briefly owned
+     * by two regions at once.
+     */
     public void setPosition(double x, double y, double z) {
+        assertOwningRegion();
         this.x = x;
         this.y = y;
         this.z = z;
     }
 
     public void setRotation(float yaw, float pitch) {
+        assertOwningRegion();
         this.yaw = yaw;
         this.pitch = pitch;
+    }
+
+    /**
+     * Fails unless the caller owns the region this entity is in.
+     *
+     * <p>An entity with no region yet is being constructed and has not been published to anything,
+     * so there is nobody to race with.
+     */
+    protected void assertOwningRegion() {
+        Region owner = this.region;
+        if (owner != null) {
+            owner.assertOwnedOrSafepoint(getClass().getSimpleName() + " mutation");
+        }
     }
 
     /** Called once per tick of the owning region, on that region's thread. */

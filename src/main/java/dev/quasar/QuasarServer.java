@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import dev.quasar.config.ServerConfig;
 import dev.quasar.engine.RegionManager;
+import dev.quasar.engine.Ownership;
 import dev.quasar.engine.RegionScheduler;
 import dev.quasar.entity.ItemEntity;
 import dev.quasar.entity.Player;
@@ -60,6 +61,10 @@ public final class QuasarServer {
 
     public QuasarServer(ServerConfig config) {
         this.config = config;
+        // Set before anything can tick, so no thread ever reads a half-configured flag.
+        Ownership.setStrict(config.strictOwnershipOrDefault(
+                Log.level().ordinal() <= Log.Level.DEBUG.ordinal()));
+
         this.flatWorld = config.generator.equalsIgnoreCase("flat");
 
         ChunkGenerator generator = flatWorld
@@ -424,12 +429,19 @@ public final class QuasarServer {
             slowestTps = Math.min(slowestTps, region.metrics().tps());
             trackedEntities += region.entityCount();
         }
+        // A violation inside a tick is caught and logged by Region.runTick so one bad region cannot
+        // kill the server -- which also means a single stack trace can scroll away unnoticed during
+        // a long run. Carrying the count on every metrics line makes that impossible to miss.
+        String ownership = Ownership.violationCount() > 0
+                ? String.format(Locale.ROOT, " OWNERSHIP-VIOLATIONS=%d", Ownership.violationCount())
+                : "";
         return String.format(Locale.ROOT,
                 "regions=%d players=%d(%d ticking) chunks=%d worstMSPT=%.2f slowestTPS=%.1f "
-                        + "parallel=%d peak=%d/%d threads=%d merges=%d splits=%d",
+                        + "parallel=%d peak=%d/%d threads=%d merges=%d splits=%d%s",
                 regionManager.regionCount(), players.size(), trackedEntities, world.loadedChunkCount(),
                 worstMspt, slowestTps,
                 scheduler.activeTicks(), scheduler.peakConcurrency(), scheduler.parallelism(),
-                scheduler.threadsUsed().size(), regionManager.merges(), regionManager.splits());
+                scheduler.threadsUsed().size(), regionManager.merges(), regionManager.splits(),
+                ownership);
     }
 }

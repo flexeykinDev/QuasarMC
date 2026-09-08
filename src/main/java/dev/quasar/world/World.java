@@ -1,6 +1,7 @@
 package dev.quasar.world;
 
 import dev.quasar.engine.Region;
+import dev.quasar.engine.Ownership;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.util.Log;
 import dev.quasar.world.block.Blocks;
@@ -293,12 +294,14 @@ public final class World {
      * {@link Region#assertOwned()}.
      */
     public int getBlock(int x, int y, int z) {
+        Ownership.checkBlockAccess(regionManager, "Reading a block", x, y, z);
         Chunk chunk = chunkAt(x >> 4, z >> 4);
         return chunk == null ? Blocks.AIR : chunk.getBlock(x & 15, y, z & 15);
     }
 
     /** Writes a block. Same ownership rule as {@link #getBlock}. */
     public boolean setBlock(int x, int y, int z, int state) {
+        Ownership.checkBlockAccess(regionManager, "Writing a block", x, y, z);
         Chunk chunk = chunkAt(x >> 4, z >> 4);
         if (chunk == null || y < minY || y > maxY()) {
             return false;

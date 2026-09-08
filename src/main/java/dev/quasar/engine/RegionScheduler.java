@@ -226,17 +226,26 @@ public final class RegionScheduler {
         safepointCount++;
         long start = System.nanoTime();
 
-        int applied = manager.applyPendingAtSafepoint();
+        // Marks this thread as the safepoint owner for the duration. No region is ticking, so
+        // structural changes are legal here and nowhere else; Ownership uses the marker both to
+        // permit them and to name the culprit when something else tries.
+        Ownership.enterSafepoint();
+        int applied;
+        try {
+            applied = manager.applyPendingAtSafepoint();
 
-        SafepointTask task;
-        while ((task = safepointQueue.poll()) != null) {
-            try {
-                task.action.run();
-                task.completion.complete(null);
-            } catch (Throwable t) {
-                Log.error("Safepoint task failed", t);
-                task.completion.completeExceptionally(t);
+            SafepointTask task;
+            while ((task = safepointQueue.poll()) != null) {
+                try {
+                    task.action.run();
+                    task.completion.complete(null);
+                } catch (Throwable t) {
+                    Log.error("Safepoint task failed", t);
+                    task.completion.completeExceptionally(t);
+                }
             }
+        } finally {
+            Ownership.exitSafepoint();
         }
 
         long durationNanos = System.nanoTime() - start;

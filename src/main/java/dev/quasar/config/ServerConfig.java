@@ -37,6 +37,16 @@ public final class ServerConfig {
     /** Region tick worker threads. 0 means "one per available core". */
     public final int regionThreads;
 
+    /**
+     * Whether to run the ownership checks that need a region lookup, which is too expensive for a
+     * hot path in production. See {@link dev.quasar.engine.Ownership}.
+     *
+     * <p>Null means "auto": follow the effective log level, so a {@code --debug} run gets them.
+     * The config is parsed before {@code --debug} is applied, so this cannot be resolved here --
+     * {@link #strictOwnershipOrDefault(boolean)} does it once the level is settled.
+     */
+    public final Boolean strictOwnership;
+
     /** World generation threads. 0 means "half the cores, at least one". */
     public final int worldGenThreads;
 
@@ -63,6 +73,11 @@ public final class ServerConfig {
     /** Seconds between background saves of edited chunks. 0 saves only on unload and shutdown. */
     public final int autosaveIntervalSeconds;
 
+    /** Resolves "auto" against the effective log level, which is only known after argument parsing. */
+    public boolean strictOwnershipOrDefault(boolean debugEnabled) {
+        return strictOwnership != null ? strictOwnership : debugEnabled;
+    }
+
     private ServerConfig(Properties props) {
         this.host = props.getProperty("server.host", "0.0.0.0");
         this.port = parseInt(props, "server.port", 25565);
@@ -87,6 +102,10 @@ public final class ServerConfig {
         this.worldGenThreads = configuredGenThreads > 0 ? configuredGenThreads : Math.max(cores / 2, 1);
         this.metricsIntervalSeconds = parseInt(props, "engine.metrics-interval-seconds", 30);
         this.syntheticTickLoadMicros = Math.max(0, parseInt(props, "engine.synthetic-tick-load-micros", 0));
+        // Defaults to whatever --debug set, so development and CI get the expensive checks and a
+        // production start does not pay for them without asking.
+        String strictRaw = props.getProperty("engine.strict-ownership", "auto").trim();
+        this.strictOwnership = strictRaw.equalsIgnoreCase("auto") ? null : Boolean.parseBoolean(strictRaw);
 
         this.logLevel = props.getProperty("log.level", "INFO");
         this.saveEnabled = Boolean.parseBoolean(props.getProperty("world.save-enabled", "true"));
@@ -128,6 +147,8 @@ public final class ServerConfig {
         out.setProperty("engine.worldgen-threads", String.valueOf(worldGenThreads));
         out.setProperty("engine.metrics-interval-seconds", String.valueOf(metricsIntervalSeconds));
         out.setProperty("engine.synthetic-tick-load-micros", String.valueOf(syntheticTickLoadMicros));
+        out.setProperty("engine.strict-ownership",
+                strictOwnership == null ? "auto" : String.valueOf(strictOwnership));
         out.setProperty("log.level", logLevel);
         out.setProperty("world.save-enabled", String.valueOf(saveEnabled));
         out.setProperty("world.autosave-interval-seconds", String.valueOf(autosaveIntervalSeconds));

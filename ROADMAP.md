@@ -27,12 +27,18 @@ dependencies without an explicit mailbox.
 *Better than Folia:* predictable light-update latency, plus the ability to defer expensive
 recalculation.
 
-### 2. A strict ownership model, with assertions
+### 2. A strict ownership model, with assertions — **done (2026-09-08)**
 
 `Region.assertOwned()` already exists — strengthen it and cover nearly everything with it. Any
 ownership violation must crash immediately with a comprehensible stack trace in debug mode.
 
 This is what Folia badly lacks: there, such bugs usually surface as silent corruption.
+
+**Landed as** `engine/Ownership.java`: block reads and writes, entity movement, region entity and
+tick-count access, and every structural change are checked; cheap checks always on, lookup-based
+ones behind `engine.strict-ownership` (auto = on with `--debug`). Errors name the thread, the region
+and the coordinate, and say to post to the mailbox. Verified by sabotage in `OwnershipTest`, not by
+observing green. See the README section "Enforced ownership".
 
 ### 3. Stable safepoints
 

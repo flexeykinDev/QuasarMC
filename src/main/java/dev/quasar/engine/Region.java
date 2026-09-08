@@ -109,11 +109,20 @@ public final class Region {
         return world;
     }
 
+    /**
+     * This region's random source.
+     *
+     * <p>Per-region so that parallel ticking stays reproducible, which only holds while a single
+     * thread draws from it; sharing it across threads destroys both the reproducibility and the
+     * generator's internal state.
+     */
     public Random random() {
+        assertOwned();
         return random;
     }
 
     public long tickCount() {
+        assertOwnedOrSafepoint("Region.tickCount()");
         return tickCount;
     }
 
@@ -133,7 +142,14 @@ public final class Region {
         return entities.size();
     }
 
+    /**
+     * This region's entities.
+     *
+     * <p>The list is unmodifiable but <em>live</em>: it is a view, not a copy, so reading it from
+     * another thread while this region ticks is a race even though nothing can be added through it.
+     */
     public List<Entity> entities() {
+        assertOwnedOrSafepoint("Region.entities()");
         return Collections.unmodifiableList(entities);
     }
 
@@ -181,20 +197,49 @@ public final class Region {
         }
     }
 
+    /**
+     * Sets the tick owner directly. Test-only.
+     *
+     * <p>{@link #runTick()} is normally the only thing that assigns ownership, and it runs a whole
+     * tick to do it. The ownership tests need a thread the region believes is its owner without any
+     * of the rest, so that what is under test is the guard alone.
+     */
+    void setOwnerForTesting(Thread thread) {
+        this.owner = thread;
+    }
+
+    /**
+     * Fails unless the caller either owns this region or is the dispatcher at a safepoint.
+     *
+     * <p>The safepoint half matters: housekeeping, metrics and the console read region state
+     * between ticks, which is legal precisely because nothing is ticking then.
+     */
+    public void assertOwnedOrSafepoint(String what) {
+        if (owner != Thread.currentThread() && !Ownership.atSafepoint() && owner != null) {
+            throw new IllegalStateException("Ownership violation: " + what + " on region " + id
+                    + " from thread '" + Thread.currentThread().getName() + "', which owns nothing;"
+                    + " region " + id + " is being ticked by '" + owner.getName() + "'."
+                    + " Post the work to it instead: region.post(() -> ...).");
+        }
+    }
+
     // ------------------------------------------------------------------------- structural changes
 
     /** Safepoint-only. Called by {@link RegionManager}. */
     void addChunkAtSafepoint(long chunkKey) {
+        Ownership.assertAtSafepoint("Region.addChunk");
         chunks.add(chunkKey);
     }
 
     /** Safepoint-only. Called by {@link RegionManager}. */
     void removeChunkAtSafepoint(long chunkKey) {
+        Ownership.assertAtSafepoint("Region.removeChunk");
         chunks.remove(chunkKey);
     }
 
     /** Safepoint-only. Moves everything owned by {@code other} into this region. */
     void absorbAtSafepoint(Region other) {
+        Ownership.assertAtSafepoint("Region.absorb");
         chunks.addAll(other.chunks);
         for (Entity entity : other.entities) {
             entity.setRegion(this);
@@ -215,17 +260,20 @@ public final class Region {
 
     /** Safepoint-only. */
     void addEntityAtSafepoint(Entity entity) {
+        Ownership.assertAtSafepoint("Region.addEntity");
         entity.setRegion(this);
         entities.add(entity);
     }
 
     /** Safepoint-only. */
     void removeEntityAtSafepoint(Entity entity) {
+        Ownership.assertAtSafepoint("Region.removeEntity");
         entities.remove(entity);
     }
 
     /** Callable from this region's tick thread; the entity leaves at the end of the tick. */
     public void removeEntity(Entity entity) {
+        assertOwned();
         entity.markRemoved();
         pendingRemoval.add(entity);
     }

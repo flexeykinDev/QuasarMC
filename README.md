@@ -108,8 +108,12 @@ Two things preserve it:
 2. **Safepoints.** Region membership only changes when no region is ticking.
 
 Anything that must touch a *different* region posts to that region's mailbox, drained by its owner
-at the top of its next tick. `Region.assertOwned()` turns a violation into an immediate stack trace
-instead of a silent data race.
+at the top of its next tick.
+
+The invariant is **enforced**, not merely documented — see
+[Ownership](src/main/java/dev/quasar/engine/Ownership.java). Every block read and write, every
+entity move, and every structural change is checked, and a violation is an immediate stack trace
+naming the thread, the region and the coordinate rather than a silent data race.
 
 ### No global tick
 
@@ -564,6 +568,53 @@ creative.
 Add Entity carries no item stack, so a drop is invisible until its metadata arrives; the tracker
 sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
 partial pickup changes the count.
+
+## Enforced ownership
+
+An invariant held up only by careful review is a habit, not an invariant. When the single-writer
+rule breaks the symptom is never an exception — it is a block that reverts, an inventory that
+duplicates, a chunk that saves half-written. Those corrupt silently, surface far from the cause, and
+barely reproduce. This is the difference between "we are careful" and "the engine will not let you".
+
+Checks come in two tiers:
+
+- **Always on.** Comparing a thread reference is free, so anything that only asks "do I own the
+  region I am already holding" runs in production too: `Region.assertOwned()`,
+  `assertOwnedOrSafepoint()`, and every `*AtSafepoint` structural change.
+- **Strict mode.** Checks that must first work out *which* region owns a coordinate need a lookup
+  under a lock, far too costly for a path that runs on every block read. Those are gated on
+  `engine.strict-ownership`, which defaults to `auto` — on under `--debug`, off otherwise.
+
+Three kinds of access are legal without owning anything, and the list is deliberately short:
+generation and loading (the chunk has no owning region yet, so nothing can be racing it),
+safepoints (no region is ticking, and the dispatcher marks itself), and startup/shutdown.
+
+**The errors are meant to be actionable**, so the wording is asserted by tests rather than left to
+drift:
+
+    Ownership violation: Writing a block at 5,70,5 (chunk 0,0) is owned by region #1,
+    but was called from thread 'intruder'. Post the work to that region instead:
+    region.post(() -> ...).
+
+A violation inside a tick is caught and logged by `Region.runTick`, so one bad region cannot take
+the server down — which also means a lone stack trace could scroll past unnoticed. The count is
+therefore carried on every metrics line as `OWNERSHIP-VIOLATIONS=n` once non-zero.
+
+### Proving the checks can fail
+
+[`OwnershipTest`](src/test/java/dev/quasar/engine/OwnershipTest.java) deliberately breaks the rule
+from a foreign thread and asserts it is caught. That is the point of it: an assertion that has never
+fired is indistinguishable from one that *cannot* fire, and this project has been burnt by exactly
+that twice — a bot swarm that ran green against a fully submerged world, and a pick-block check that
+passed without a single middle-click ever being handled.
+
+So the guards were verified by sabotage, not by observing green. Stubbing out the block check fails
+exactly the two block-access tests; stubbing out the safepoint check fails exactly the two safepoint
+tests. A test that cannot fail is not evidence.
+
+There is also a test pinning the fact that strict mode off skips the expensive lookup — so anyone
+making these checks unconditional has to change a test and decide knowingly, rather than
+accidentally putting a locked lookup in a hot path.
 
 ## Automated real-client testing
 
