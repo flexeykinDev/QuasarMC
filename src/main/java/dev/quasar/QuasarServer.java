@@ -5,12 +5,19 @@ import com.google.gson.JsonObject;
 import dev.quasar.config.ServerConfig;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.engine.Ownership;
+import dev.quasar.engine.Region;
+import java.util.List;
+import java.util.ArrayList;
+import dev.quasar.world.ChunkPos;
+import dev.quasar.world.storage.AnvilChunkCodec;
+import dev.quasar.world.storage.EntityIo;
 import dev.quasar.world.light.LightProperties;
 import dev.quasar.item.RecipeRegistry;
 import dev.quasar.world.block.BlockCollision;
 import dev.quasar.world.blockentity.BlockEntityTypes;
 import dev.quasar.world.redstone.RedstoneBlocks;
 import dev.quasar.engine.RegionScheduler;
+import dev.quasar.entity.FallingBlockEntity;
 import dev.quasar.entity.ItemEntity;
 import dev.quasar.entity.Player;
 import dev.quasar.item.HotbarKit;
@@ -50,6 +57,16 @@ public final class QuasarServer {
     private final World world;
     private final RegionManager regionManager;
     private final RegionScheduler scheduler;
+
+    /**
+     * Entity region files, the {@code entities/} tree beside {@code region/}. Null when saving is
+     * off, exactly like the chunk storage.
+     */
+    private RegionStorage entityStorage;
+
+    /** Previous metrics sample, so the safepoint share is per-interval rather than lifetime. */
+    private long lastMetricsNanos = System.nanoTime();
+    private long lastSafepointNanos;
     private final NettyServer network;
 
     private final ConcurrentHashMap<UUID, Player> players = new ConcurrentHashMap<>();
@@ -96,6 +113,7 @@ public final class QuasarServer {
         if (config.saveEnabled) {
             try {
                 storage = new RegionStorage(Path.of(config.levelName));
+                this.entityStorage = new RegionStorage(Path.of(config.levelName), "entities");
                 players = new PlayerDataStorage(Path.of(config.levelName));
             } catch (IOException e) {
                 // Running without persistence is a big enough behaviour change to be loud about,
@@ -112,6 +130,20 @@ public final class QuasarServer {
         this.regionManager = new RegionManager(world, config.seed);
         this.world.setRegionManager(regionManager);
         this.world.setSyntheticTickLoadMicros(config.syntheticTickLoadMicros);
+        // Lets physics start a falling block without the world package depending on entities.
+        this.world.setFallingBlockSpawner((state, fx, fy, fz) ->
+                regionManager.requestEntityAdd(new FallingBlockEntity(this, state, fx, fy, fz)));
+        this.world.setEntityPersistence(new World.EntityPersistence() {
+            @Override
+            public void saveChunkEntities(int chunkX, int chunkZ) {
+                QuasarServer.this.saveChunkEntities(chunkX, chunkZ);
+            }
+
+            @Override
+            public void loadChunkEntities(int chunkX, int chunkZ) {
+                QuasarServer.this.loadChunkEntities(chunkX, chunkZ);
+            }
+        });
         this.scheduler = new RegionScheduler(regionManager, config.regionThreads);
         this.network = new NettyServer(this);
         this.housekeeping = Executors.newSingleThreadScheduledExecutor(runnable -> {
@@ -215,6 +247,65 @@ public final class QuasarServer {
      * <p>The entity joins its region at the next safepoint, so it appears within a tick or two
      * rather than instantly. Safe to call from a region thread.
      */
+    /**
+     * Writes the entities standing in one chunk, then removes them.
+     *
+     * <p>Safepoint-only, called just before the chunk is dropped: nothing is ticking, so reading
+     * another region's entity list is legal here and nowhere else.
+     *
+     * <p>They are marked removed after being written. Leaving them alive in a region whose chunk
+     * has gone would keep them ticking over a world that is not loaded, and they would be written
+     * again -- and so duplicated -- the next time the chunk unloaded.
+     */
+    private void saveChunkEntities(int chunkX, int chunkZ) {
+        if (entityStorage == null) {
+            return;
+        }
+        Region region = regionManager.regionForChunk(chunkX, chunkZ);
+        if (region == null) {
+            return;
+        }
+        long wanted = ChunkPos.key(chunkX, chunkZ);
+        List<dev.quasar.entity.Entity> inChunk = new ArrayList<>();
+        for (dev.quasar.entity.Entity entity : region.entities()) {
+            if (!entity.isRemoved() && !(entity instanceof Player) && entity.chunkKey() == wanted) {
+                inChunk.add(entity);
+            }
+        }
+        if (inChunk.isEmpty()) {
+            return;
+        }
+
+        Nbt.NbtCompound root = EntityIo.toNbt(inChunk, chunkX, chunkZ, AnvilChunkCodec.DATA_VERSION);
+        for (dev.quasar.entity.Entity entity : inChunk) {
+            entity.markRemoved();
+        }
+        if (root != null) {
+            entityStorage.writeChunkAsync(chunkX, chunkZ, root);
+            Log.debug("Saved %d entit%s from chunk %d,%d", inChunk.size(),
+                    inChunk.size() == 1 ? "y" : "ies", chunkX, chunkZ);
+        }
+    }
+
+    /** Brings a chunk's saved entities back. Called once the chunk is loaded. */
+    private void loadChunkEntities(int chunkX, int chunkZ) {
+        if (entityStorage == null) {
+            return;
+        }
+        Nbt.NbtCompound root = entityStorage.readChunk(chunkX, chunkZ);
+        if (root == null) {
+            return;
+        }
+        List<ItemEntity> restored = EntityIo.fromNbt(this, root);
+        for (ItemEntity item : restored) {
+            regionManager.requestEntityAdd(item);
+        }
+        if (!restored.isEmpty()) {
+            Log.debug("Restored %d item entit%s in chunk %d,%d", restored.size(),
+                    restored.size() == 1 ? "y" : "ies", chunkX, chunkZ);
+        }
+    }
+
     public void spawnItem(ItemStack stack, double x, double y, double z, int pickupDelay) {
         if (stack.isEmpty()) {
             return;
@@ -447,16 +538,28 @@ public final class QuasarServer {
         // A violation inside a tick is caught and logged by Region.runTick so one bad region cannot
         // kill the server -- which also means a single stack trace can scroll away unnoticed during
         // a long run. Carrying the count on every metrics line makes that impossible to miss.
+        // Share of wall time the whole server spent stopped, since the last report. This is the
+        // serial fraction of a supposedly parallel engine, so it is worth a permanent place on the
+        // line rather than a one-off measurement.
+        long nowNanos = System.nanoTime();
+        long safepointTotal = scheduler.safepointNanos();
+        long elapsed = nowNanos - lastMetricsNanos;
+        double safepointPercent = elapsed > 0
+                ? 100.0 * (safepointTotal - lastSafepointNanos) / elapsed
+                : 0.0;
+        lastMetricsNanos = nowNanos;
+        lastSafepointNanos = safepointTotal;
+
         String ownership = Ownership.violationCount() > 0
                 ? String.format(Locale.ROOT, " OWNERSHIP-VIOLATIONS=%d", Ownership.violationCount())
                 : "";
         return String.format(Locale.ROOT,
                 "regions=%d players=%d(%d ticking) chunks=%d worstMSPT=%.2f slowestTPS=%.1f "
-                        + "parallel=%d peak=%d/%d threads=%d merges=%d splits=%d%s",
+                        + "parallel=%d peak=%d/%d threads=%d merges=%d splits=%d safepoint=%.2f%%%s",
                 regionManager.regionCount(), players.size(), trackedEntities, world.loadedChunkCount(),
                 worstMspt, slowestTps,
                 scheduler.activeTicks(), scheduler.peakConcurrency(), scheduler.parallelism(),
                 scheduler.threadsUsed().size(), regionManager.merges(), regionManager.splits(),
-                ownership);
+                safepointPercent, ownership);
     }
 }

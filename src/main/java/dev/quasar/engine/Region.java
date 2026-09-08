@@ -111,6 +111,9 @@ public final class Region {
     /** Gravity and fluid flow queued by this region, drained under its own budget. */
     private final BlockPhysics physics;
 
+    /** Vanilla's slow background block ticks: grass spreading and dying back. */
+    private final dev.quasar.world.physics.RandomTicks randomTicks;
+
     /** Redstone, likewise per-region: its timing is measured in this region's ticks. */
     private final RedstoneEngine redstone;
 
@@ -124,6 +127,7 @@ public final class Region {
         this.random = new Random(seed ^ (id * 0x9E3779B97F4A7C15L));
         this.lightEngine = new LightEngine(world);
         this.physics = new BlockPhysics(world);
+        this.randomTicks = new dev.quasar.world.physics.RandomTicks(world);
         this.redstone = new RedstoneEngine(world);
         this.nextTickNanos = System.nanoTime();
     }
@@ -404,6 +408,9 @@ public final class Region {
                 seedPhysics(chunk);
             }
         }
+        // Uses this region's own random source, so parallel regions stay independent and each
+        // one's growth is reproducible from its seed.
+        randomTicks.tick(this, random, tickCount);
         physics.process(this, tickCount, BlockPhysics.DEFAULT_BUDGET);
         redstone.process(this, tickCount, RedstoneEngine.DEFAULT_BUDGET);
         lightEngine.processQueue(LightEngine.DEFAULT_BUDGET);

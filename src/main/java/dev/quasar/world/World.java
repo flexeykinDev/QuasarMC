@@ -176,6 +176,9 @@ public final class World {
                 }
                 if (stillWanted && regionManager != null) {
                     regionManager.requestChunkAdd(chunkX, chunkZ);
+                    if (entityPersistence != null) {
+                        entityPersistence.loadChunkEntities(chunkX, chunkZ);
+                    }
                 }
             } catch (Throwable t) {
                 synchronized (tickets) {
@@ -270,7 +273,12 @@ public final class World {
             }
             Chunk chunk = chunks.get(key);
             if (chunk != null) {
-                // Save before dropping the reference, or the edit is gone.
+                // Save before dropping the reference, or the edit is gone. Entities first, while
+                // the owning region still holds them: once the chunk is gone they are unreachable
+                // and the drops in it would simply cease to exist.
+                if (entityPersistence != null) {
+                    entityPersistence.saveChunkEntities(ChunkPos.keyX(key), ChunkPos.keyZ(key));
+                }
                 saveIfDirty(chunk);
                 chunks.remove(key);
                 unloaded++;
@@ -342,10 +350,23 @@ public final class World {
         this.fallingBlockSpawner = spawner;
     }
 
-    public void spawnFallingBlock(int blockState, double x, double y, double z) {
-        if (fallingBlockSpawner != null) {
-            fallingBlockSpawner.spawn(blockState, x, y, z);
+    /**
+     * Starts a falling block.
+     *
+     * @return true when something took ownership of it
+     *
+     * <p>Returning a result rather than silently doing nothing matters more than it looks. Gravity
+     * clears the block first and then calls this, so a missing spawner does not mean "no
+     * animation" -- it means the block is deleted outright. That is precisely what happened: the
+     * server never wired a spawner, so every sand block a player placed unsupported vanished for
+     * good, while the unit tests passed because each installs a spawner of its own.
+     */
+    public boolean spawnFallingBlock(int blockState, double x, double y, double z) {
+        if (fallingBlockSpawner == null) {
+            return false;
         }
+        fallingBlockSpawner.spawn(blockState, x, y, z);
+        return true;
     }
 
     /** Lets the world start a falling block without depending on the entity or server packages. */
@@ -354,6 +375,24 @@ public final class World {
     }
 
     private FallingBlockSpawner fallingBlockSpawner;
+
+    /**
+     * Saves and restores the entities of a chunk. Set by the server; absent in tests, where a
+     * chunk unloading simply forgets whatever was standing in it.
+     */
+    public interface EntityPersistence {
+        /** Called at a safepoint, just before a chunk is dropped. */
+        void saveChunkEntities(int chunkX, int chunkZ);
+
+        /** Called once a chunk is loaded, to bring its entities back. */
+        void loadChunkEntities(int chunkX, int chunkZ);
+    }
+
+    private EntityPersistence entityPersistence;
+
+    public void setEntityPersistence(EntityPersistence persistence) {
+        this.entityPersistence = persistence;
+    }
 
     public int getBlockRaw(int x, int y, int z) {
         if (y < minY || y > maxY()) {

@@ -90,6 +90,26 @@ class CraftingMenuTest {
     }
 
     @Test
+    void consumingTwiceCannotOutrunTheGrid() {
+        needsData();
+        CraftingMenu menu = table();
+        int planks = ItemRegistry.idForName("minecraft:oak_planks");
+        menu.setGrid(0, ItemStack.of(planks, 2));
+        menu.setGrid(3, ItemStack.of(planks, 2));
+        menu.refreshResult();
+
+        // Two crafts is exactly what the grid holds; a third must produce nothing. Shift-click
+        // crafting loops on this, and a loop that keeps going past the last ingredient is how a
+        // grid hands out free items.
+        menu.consumeIngredients();
+        menu.consumeIngredients();
+
+        assertTrue(menu.result().isEmpty(), "the grid is spent and must stop producing");
+        assertTrue(menu.grid(0).isEmpty());
+        assertTrue(menu.grid(3).isEmpty());
+    }
+
+    @Test
     void anEmptyGridProducesNothing() {
         needsData();
         CraftingMenu menu = table();

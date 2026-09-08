@@ -80,6 +80,24 @@ class BlockPhysicsTest {
     }
 
     @Test
+    void withNoSpawnerTheBlockStaysPutRatherThanVanishing() {
+        // The failure this guards against actually shipped: the server never wired a spawner, so
+        // gravity cleared the block, found nothing to hand it to, and the sand was deleted. Every
+        // test passed, because each installs a spawner of its own -- so this one deliberately does
+        // not, and asserts the safe outcome.
+        world.setFallingBlockSpawner(null);
+        world.setBlock(8, SURFACE + 1, 8, Blocks.SAND);
+        world.setBlock(8, SURFACE, 8, Blocks.AIR);
+
+        BlockPhysics physics = region.physics();
+        physics.onBlockChanged(8, SURFACE, 8);
+        physics.process(region, 0, 4096);
+
+        assertEquals(Blocks.SAND, world.getBlockRaw(8, SURFACE + 1, 8),
+                "with nowhere to send a falling block, the block must stay where it is");
+    }
+
+    @Test
     void supportedSandDoesNotMove() {
         world.setBlock(8, SURFACE + 1, 8, Blocks.SAND);
 

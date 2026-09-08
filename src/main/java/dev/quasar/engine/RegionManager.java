@@ -144,19 +144,51 @@ public final class RegionManager {
         return applyPendingAtSafepoint();
     }
 
+    /**
+     * Safepoint ordering: lower runs first.
+     *
+     * <p>Unload before load, and entity removals with them. Merges follow from adding a chunk and
+     * splits from removing one, so ordering the chunk changes is what orders those too.
+     */
+    private static int priorityOf(Change change) {
+        return switch (change) {
+            case Change.RemoveChunk c -> 0;
+            case Change.RemoveEntity c -> 1;
+            case Change.AddChunk c -> 2;
+            case Change.AddEntity c -> 3;
+        };
+    }
+
     int applyPendingAtSafepoint() {
         int applied = 0;
         // Held as region references, not IDs: a candidate can be merged away later in this same
         // batch, and we still need to check whoever inherited its chunks.
         Set<Region> splitCandidates = Collections.newSetFromMap(new IdentityHashMap<>());
-        Change change;
-        while ((change = pending.poll()) != null) {
+        // Drained and sorted before anything is applied, so that when the cap bites it is the
+        // least useful work that gets deferred rather than whatever happened to arrive last.
+        //
+        // Removals come first on purpose. An unload frees memory and shrinks a region, so deferring
+        // one under load means holding chunks the server has already decided it does not want --
+        // which grows the very backlog causing the pressure. An add can wait a safepoint: the chunk
+        // is generated already and merely becomes visible a beat later.
+        List<Change> batch = new ArrayList<>();
+        Change drained;
+        while ((drained = pending.poll()) != null) {
+            batch.add(drained);
+        }
+        batch.sort(Comparator.comparingInt(RegionManager::priorityOf));
+
+        for (int i = 0; i < batch.size(); i++) {
+            Change change = batch.get(i);
             // Some changes legitimately enqueue follow-up work (an entity whose chunk is missing
             // asks for it and retries). Bound the drain so a pathological ping-pong degrades into
             // a warning and a deferred batch rather than a hung dispatcher and a frozen server.
             if (applied >= MAX_CHANGES_PER_SAFEPOINT) {
-                Log.warn("Safepoint hit the %d-change cap; deferring the rest to the next one",
-                        MAX_CHANGES_PER_SAFEPOINT);
+                Log.warn("Safepoint hit the %d-change cap; deferring %d to the next one",
+                        MAX_CHANGES_PER_SAFEPOINT, batch.size() - i);
+                // Put the remainder back rather than dropping it. These are structural changes:
+                // a lost RemoveChunk leaks a chunk forever, a lost AddEntity loses the entity.
+                pending.addAll(batch.subList(i, batch.size()));
                 break;
             }
             applied++;

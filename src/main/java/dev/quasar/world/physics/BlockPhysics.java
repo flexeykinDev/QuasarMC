@@ -241,8 +241,12 @@ public final class BlockPhysics {
 
         // Becomes an entity rather than teleporting down a block: the client animates the fall, and
         // a stack of sand collapsing one block per tick looks like a bug rather than gravity.
+        // Clear only once something has taken the falling block. Clearing first and discovering
+        // afterwards that nothing did would delete the block instead of dropping it.
+        if (!world.spawnFallingBlock(state, x + 0.5, y, z + 0.5)) {
+            return;
+        }
         setAndBroadcast(x, y, z, Blocks.AIR);
-        world.spawnFallingBlock(state, x + 0.5, y, z + 0.5);
         dev.quasar.util.Log.debug("block %d at %d,%d,%d lost its support and is falling",
                 state, x, y, z);
     }

@@ -146,6 +146,20 @@ public final class PlayListener implements PacketListener {
                 }
             });
 
+        } else if (packetId == Protocol.PLAY_SERVERBOUND_SIGN_UPDATE) {
+            long position = data.readLong();
+            boolean front = data.readBoolean();
+            String[] lines = new String[4];
+            for (int i = 0; i < lines.length; i++) {
+                lines[i] = ByteBufs.readString(data, 384);
+            }
+            player.submit(() -> {
+                Region region = player.region();
+                if (region != null) {
+                    player.updateSign(region, position, front, lines);
+                }
+            });
+
         } else if (packetId == Protocol.PLAY_SERVERBOUND_CHAT) {
             // Only the message text is used. The signature, salt and acknowledgement bitset that
             // follow are part of Mojang's chat-reporting chain, which this server does not

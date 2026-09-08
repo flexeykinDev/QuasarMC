@@ -65,6 +65,16 @@ public final class ItemEntity extends Entity {
         return age;
     }
 
+    /**
+     * Restores the age of a stack loaded from disk.
+     *
+     * <p>Without this a stack saved four minutes into its life would get a fresh five on load, and
+     * drops in a chunk that keeps loading and unloading would never despawn at all.
+     */
+    public void setAge(int age) {
+        this.age = Math.max(0, age);
+    }
+
     public int pickupDelay() {
         return pickupDelay;
     }

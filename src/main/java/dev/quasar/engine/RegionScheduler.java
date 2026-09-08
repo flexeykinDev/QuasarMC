@@ -53,6 +53,16 @@ public final class RegionScheduler {
 
     private volatile boolean running;
     private volatile long safepointCount;
+
+    /**
+     * Cumulative nanoseconds spent inside safepoints.
+     *
+     * <p>The one number that says whether the region model is actually buying parallelism: time in
+     * a safepoint is time when nothing ticks at all, so it is the server's serial fraction. A count
+     * of safepoints does not answer that -- a thousand cheap ones are fine and one long one is not.
+     */
+    private final java.util.concurrent.atomic.AtomicLong safepointNanos =
+            new java.util.concurrent.atomic.AtomicLong();
     private volatile long dispatchCount;
     private long lastSafepointNanos;
 
@@ -99,6 +109,11 @@ public final class RegionScheduler {
 
     public long safepointCount() {
         return safepointCount;
+    }
+
+    /** Cumulative time spent stopped in safepoints, in nanoseconds. */
+    public long safepointNanos() {
+        return safepointNanos.get();
     }
 
     public long dispatchCount() {
@@ -249,6 +264,7 @@ public final class RegionScheduler {
         }
 
         long durationNanos = System.nanoTime() - start;
+        safepointNanos.addAndGet(durationNanos);
         if (durationNanos > 20_000_000L) {
             Log.warn("Long safepoint: %.1f ms for %d structural change(s)", durationNanos / 1e6, applied);
         }

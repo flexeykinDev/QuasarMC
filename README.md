@@ -33,16 +33,18 @@ before you judge it:
 - Block physics: sand and gravel fall as entities, water and lava flow and drain
 - Basic redstone: dust, levers, torches, repeaters and lamps
 - Crafting: all 932 vanilla crafting recipes, at a crafting table
+- Signs you can write on and read back
+- Random ticks: grass spreads onto bare dirt and dies back under cover
+- Item entities persist across chunk unload, in vanilla's own `entities/` region files
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
-- **Block behaviour.** No random ticks or crafting. Gravity, fluids and basic redstone work;
-  nothing else reacts.
+- **Block behaviour.** Gravity, fluids, basic redstone and grass spread work. Crops, leaf decay,
+  fire and everything else do not.
 - **Mobs and combat.** Players, dropped items and falling blocks move; nothing else does.
 - **Survival mechanics.** Containers, the inventory, item entities and crafting are real, but
   there is no stack accounting on placement — creative items are infinite and placing never
   consumes one. Breaking a block does not drop it, which matches vanilla creative.
-- **Item entity persistence.** Drops live in memory only; see [Item entities](#item-entities).
 - **Block entity contents beyond containers.** Chests and their kin are sent to the client; signs,
   banners and spawners have no modelled data of their own.
 - **Furnaces, brewing stands, enchanting tables.** Containers with processing logic, not just slots.
@@ -293,6 +295,20 @@ The chunk's NBT is built at a safepoint, where nothing can be mid-tick over it; 
 happen on the IO thread. A save therefore costs a pause proportional to how much was edited and none
 proportional to disk speed. Chunks are saved on unload, on a timer
 (`world.autosave-interval-seconds`), on `save` from the console, and on shutdown.
+
+### Entities
+
+Item entities are written to vanilla's own `entities/` region files, beside `region/` — the same
+file format, a different tree, which is where Minecraft has kept entities since 1.17. Writing them
+into the chunk instead would have worked here and quietly lost them for anything else that opened
+the world, which is the opposite of what Anvil support is for.
+
+Saved at a safepoint just before a chunk is dropped, while the owning region still holds them, and
+restored when the chunk comes back. Age survives the round trip, so a stack saved four minutes into
+its life still despawns on time rather than getting a fresh five.
+
+Falling blocks are not persisted: one exists for well under a second, and it is a transitional
+state rather than something a world contains.
 
 ### Player data
 
@@ -573,6 +589,33 @@ creative.
 Add Entity carries no item stack, so a drop is invisible until its metadata arrives; the tracker
 sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
 partial pickup changes the count.
+
+## Signs
+
+Placing a sign opens the editor, and what you type is stored on the block entity and shown to
+everyone who can see it. Text goes out as a single `block_entity_data` packet rather than a chunk
+resend.
+
+The one detail worth stating: since 1.20.4 a sign holds `front_text` and `back_text`, each with four
+`messages`, and **each message is a JSON text component serialised as a string** — not a bare
+string. Getting that wrong gives a sign that saves, loads and renders perfectly blank, because the
+client parses each entry and silently draws nothing when it will not parse. The escaping is done by
+hand here, since this is the only JSON the server writes and a quote typed onto a sign would
+otherwise break the component.
+
+## Random ticks
+
+Grass creeps onto bare dirt that has light and a grass neighbour, and dies back to dirt under
+anything solid. Three positions per section per tick, as vanilla does, in the chunks around a
+player rather than across everything loaded.
+
+**An optimisation that was removed again**, because it is a useful warning: an early version
+examined only a quarter of the chunks per tick, on a benchmark that seemed to show random ticks
+costing two milliseconds a region. Re-running with random ticks disabled *entirely* gave a worse
+figure than leaving them on — so the two milliseconds were run-to-run variance on this machine, and
+the optimisation was justified by noise. It was deleted rather than kept just in case. This machine
+swings between 18.4 and 20.0 TPS on identical runs, which is worth knowing before reading anything
+into a single measurement here.
 
 ## Crafting
 

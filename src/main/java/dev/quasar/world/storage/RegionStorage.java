@@ -40,7 +40,16 @@ public final class RegionStorage implements Closeable {
     private final AtomicLong pendingWrites = new AtomicLong();
 
     public RegionStorage(Path worldDirectory) throws IOException {
-        this.regionDirectory = worldDirectory.resolve("region");
+        this(worldDirectory, "region");
+    }
+
+    /**
+     * @param subdirectory which region tree this is. Vanilla keeps chunks under {@code region} and
+     *                     entities under {@code entities}, both in the same file format, so one
+     *                     implementation serves both.
+     */
+    public RegionStorage(Path worldDirectory, String subdirectory) throws IOException {
+        this.regionDirectory = worldDirectory.resolve(subdirectory);
         Files.createDirectories(regionDirectory);
         this.writer = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "quasar-chunk-io");

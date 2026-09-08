@@ -141,6 +141,17 @@ public final class Protocol {
     public static final int ENTITY_TYPE_ITEM = Integer.getInteger("quasar.itemEntityType", 68);
 
     /** {@code minecraft:falling_block}. Its spawn packet's data field carries the block state ID. */
+    /** Opens the sign editor on the client, right after a sign is placed. */
+    public static final int PLAY_CLIENTBOUND_OPEN_SIGN_EDITOR =
+            id("play.clientbound.open_sign_editor", 0x36);
+
+    /** Pushes one block entity to a client that already has the chunk. */
+    public static final int PLAY_CLIENTBOUND_BLOCK_ENTITY_DATA =
+            id("play.clientbound.block_entity_data", 0x07);
+
+    /** The finished sign text coming back from the editor. */
+    public static final int PLAY_SERVERBOUND_SIGN_UPDATE = id("play.serverbound.sign_update", 0x39);
+
     /** {@code minecraft:crafting} in the menu registry: the 3x3 crafting table screen. */
     public static final int MENU_TYPE_CRAFTING = Integer.getInteger("quasar.craftingMenuType", 12);
 

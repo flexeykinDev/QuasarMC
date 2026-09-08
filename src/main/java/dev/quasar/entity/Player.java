@@ -19,6 +19,7 @@ import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
 import dev.quasar.world.blockentity.BlockEntityTypes;
+import dev.quasar.world.blockentity.Signs;
 import dev.quasar.world.redstone.RedstoneBlocks;
 import dev.quasar.world.blockentity.ContainerIo;
 import dev.quasar.world.blockentity.Containers;
@@ -757,11 +758,17 @@ public final class Player extends Entity {
         if (mode == 1) {
             int guard = 0;
             while (!menu.result().isEmpty() && guard++ < 512) {
-                if (!insert(menu.result()).isEmpty()) {
-                    // No room left; stop rather than dropping the surplus on the floor.
+                ItemStack made = menu.result();
+                // Room is checked *before* inserting, never inferred from the leftover afterwards.
+                // insert() fills what it can and hands back the remainder, so "insert, and stop if
+                // anything came back" banks a partial insert and then returns without consuming the
+                // ingredients -- the player keeps those items for free. That is item duplication,
+                // and it is silent.
+                if (!hasRoomFor(made)) {
                     break;
                 }
                 menu.consumeIngredients();
+                insert(made);
             }
             return;
         }
@@ -1138,6 +1145,25 @@ public final class Player extends Entity {
      *
      * @return whatever did not fit
      */
+    /**
+     * Whether a whole stack would fit in the inventory, without changing anything.
+     *
+     * <p>Deliberately a separate pass rather than "try it and see": {@link #insert} is destructive
+     * and partial, so there is no way to ask it a question without also answering it.
+     */
+    private boolean hasRoomFor(ItemStack stack) {
+        int remaining = stack.count();
+        for (int slot = 9; slot < inventory.length && remaining > 0; slot++) {
+            ItemStack existing = inventory[slot];
+            if (existing.isEmpty()) {
+                remaining -= ItemStack.MAX_STACK;
+            } else if (existing.stacksWith(stack)) {
+                remaining -= existing.spaceLeft();
+            }
+        }
+        return remaining <= 0;
+    }
+
     private ItemStack insert(ItemStack stack) {
         int[] order = new int[inventory.length - 9];
         int index = 0;
@@ -1525,6 +1551,9 @@ public final class Player extends Entity {
                         state, face, cursorY, yaw, Blocks.isWater(existing));
                 server.world().setBlock(x, y, z, placed);
                 createBlockEntityIfNeeded(placed, x, y, z);
+                if (Signs.isSign(placed)) {
+                    openSignEditor(x, y, z, placed);
+                }
                 refreshConnections(region, x, y, z);
                 // Read back rather than logging `placed`: connection updates run after the write,
                 // so the value set a moment ago is not necessarily what ended up there.
@@ -1571,6 +1600,13 @@ public final class Player extends Entity {
      * contents back over a block that no longer exists.
      */
     private void salvageContainer(int previousState, int x, int y, int z) {
+        // A crafting table is not a container, so it must be handled before the container checks
+        // below return early on it. Breaking the table someone is crafting at has to close their
+        // screen and give the grid back, exactly as breaking a chest closes its screen.
+        if (craftingMenu != null && craftingMenu.isAt(x, y, z)) {
+            closeCraftingMenu();
+        }
+
         BlockStateRegistry.State state = BlockStateRegistry.byId(previousState);
         if (state == null) {
             return;
@@ -1728,6 +1764,86 @@ public final class Player extends Entity {
         Log.debug("%s used %s at %d,%d,%d", name,
                 RedstoneBlocks.isLever(state) ? "a lever" : "a repeater", x, y, z);
         return true;
+    }
+
+    /**
+     * Creates a sign block entity and opens its editor.
+     *
+     * <p>Called straight after the sign block is placed. Without the editor a sign is a blank plank:
+     * there is no other way for a player to enter the text.
+     */
+    private void openSignEditor(int x, int y, int z, int blockState) {
+        Chunk chunk = server.world().chunkAt(x >> 4, z >> 4);
+        if (chunk == null) {
+            return;
+        }
+        chunk.setBlockEntity(x & 15, y, z & 15, Signs.newBlockEntity(blockState, x, y, z));
+        connection.send(Protocol.PLAY_CLIENTBOUND_OPEN_SIGN_EDITOR, buf -> {
+            ByteBufs.writeBlockPos(buf, x, y, z);
+            buf.writeBoolean(true); // editing the front, which is the side just placed
+        });
+    }
+
+    /**
+     * Stores text typed into a sign and shows it to everyone who can see it.
+     *
+     * <p>The reach check is the same one block editing uses. A sign editor stays open client-side,
+     * so without it a player could walk away, or across the world, and still rewrite the sign.
+     */
+    public void updateSign(Region region, long packedPos, boolean front, String[] lines) {
+        int x = ByteBufs.blockPosX(packedPos);
+        int y = ByteBufs.blockPosY(packedPos);
+        int z = ByteBufs.blockPosZ(packedPos);
+
+        if (!isEditAllowed(region, x, y, z)) {
+            return;
+        }
+        int state = server.world().getBlock(x, y, z);
+        if (!Signs.isSign(state)) {
+            return;
+        }
+        Chunk chunk = server.world().chunkAt(x >> 4, z >> 4);
+        if (chunk == null) {
+            return;
+        }
+
+        Nbt.NbtCompound entity = chunk.blockEntity(x & 15, y, z & 15);
+        if (entity == null) {
+            entity = Signs.newBlockEntity(state, x, y, z);
+        }
+        Signs.withText(entity, front, lines);
+        chunk.setBlockEntity(x & 15, y, z & 15, entity);
+
+        broadcastBlockEntity(region, x, y, z, entity);
+        Log.debug("%s wrote on a sign at %d,%d,%d", name, x, y, z);
+    }
+
+    /**
+     * Pushes one block entity to everyone in range who already has the chunk.
+     *
+     * <p>Resending the whole chunk would also work and would cost a few hundred times as much; the
+     * client keeps its own block entities and merges this in.
+     */
+    private void broadcastBlockEntity(Region region, int x, int y, int z, Nbt.NbtCompound entity) {
+        if (!(entity.get("id") instanceof Nbt.NbtString id)) {
+            return;
+        }
+        int type = BlockEntityTypes.idFor(id.value());
+        if (type < 0) {
+            return;
+        }
+        int chunkX = x >> 4;
+        int chunkZ = z >> 4;
+        for (Entity other : region.entities()) {
+            if (other instanceof Player viewer && !viewer.isRemoved()
+                    && viewer.hasChunkLoaded(chunkX, chunkZ)) {
+                viewer.connection.send(Protocol.PLAY_CLIENTBOUND_BLOCK_ENTITY_DATA, buf -> {
+                    ByteBufs.writeBlockPos(buf, x, y, z);
+                    ByteBufs.writeVarInt(buf, type);
+                    Nbt.writeNetwork(buf, entity);
+                });
+            }
+        }
     }
 
     public void sendBlockUpdate(int x, int y, int z, int state) {

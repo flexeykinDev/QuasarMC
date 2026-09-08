@@ -33,3 +33,4 @@ registries-*.json
 recipes.json
 /run-be/
 /run-craft/
+/run-persist/

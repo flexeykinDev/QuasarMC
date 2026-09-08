@@ -47,15 +47,25 @@ ones behind `engine.strict-ownership` (auto = on with `--debug`). Errors name th
 and the coordinate, and say to post to the mailbox. Verified by sabotage in `OwnershipTest`, not by
 observing green. See the README section "Enforced ownership".
 
-### 3. Stable safepoints
+### 3. Stable safepoints — **done (2026-09-08)**
 
 Make safepoints as cheap and predictable as possible. Rate-limiting plus prioritisation (unload >
 merge > split, and so on). Metrics: how much time the server spends inside safepoints.
+
+**Landed:** structural changes are sorted before being applied, so when the per-safepoint cap
+bites it defers the least useful work rather than whatever arrived last -- unloads first, since
+deferring one means holding chunks the server has already decided it does not want. The deferred
+remainder is put back, never dropped. `safepoint=N%` now rides on every metrics line: the share
+of wall time the whole server spent stopped, which is its serial fraction. Measured at ~1%.
 
 ### 4. Correct persistence
 
 Full Anvil and `level.dat`. Save item entities, block entities and player data. Be able to load
 vanilla worlds, at least partially.
+
+**Item entities: done (2026-09-08)** -- written to vanilla's own `entities/` region tree. Block
+entities and player data were already saved. Reading arbitrary vanilla worlds still needs
+`blocks.json`, so that half remains open.
 
 ---
 
@@ -67,11 +77,11 @@ vanilla worlds, at least partially.
 |----------|---------|--------------------------------------------------|
 | ~~P0~~ **done** | Block physics (gravel, sand, water, lava) | Region-local as planned, and no mailbox needed: one step moves one block, and adjacent loaded chunks are always the same region. Cascades are unbounded but advance a step at a time. See the README. |
 | ~~P0~~ **done** | Redstone (at least basic) | The hardest part. Needs a clear model of "this redstone component belongs to this region" -- and the answer was that no component needs an owner, because none is ever an object. Every value derives from one block's neighbours. See the README. |
-| P1 | Random ticks | Easy, but important for crop growth |
+| ~~P1~~ **done** | Random ticks | Grass spread and die-back. Crops need the crop blocks first. |
 | ~~P1~~ **done** | Block updates / neighbour updates | Landed with physics and redstone: a change wakes its neighbours and they re-derive themselves. Budgeted per region, so a cascade defers rather than exploding. |
 | ~~P1~~ **mostly done** | Inventory and crafting | All 932 vanilla crafting recipes at a crafting table, extracted from the jar since --reports does not emit them. The 2x2 inventory grid is not done and is unreachable in creative anyway. |
 | P2 | Furnaces, brewing stands, enchanting tables | Processing logic |
-| P2 | Signs, banners, heads | Small things, but they matter enormously to a server feeling alive |
+| ~~P2~~ **signs done** | Signs, banners, heads | Signs write and read back. Banners and heads are just blocks so far. |
 
 **The key idea:** any system that can cross a region boundary must go **only** through a mailbox or
 an explicit ownership transfer. No hidden global structures.
