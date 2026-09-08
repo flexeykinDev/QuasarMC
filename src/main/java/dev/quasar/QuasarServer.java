@@ -6,6 +6,7 @@ import dev.quasar.config.ServerConfig;
 import dev.quasar.engine.RegionManager;
 import dev.quasar.engine.Ownership;
 import dev.quasar.world.light.LightProperties;
+import dev.quasar.world.redstone.RedstoneBlocks;
 import dev.quasar.engine.RegionScheduler;
 import dev.quasar.entity.ItemEntity;
 import dev.quasar.entity.Player;
@@ -78,6 +79,7 @@ public final class QuasarServer {
         // After the block table, never before: the light tables are indexed by state ID and would
         // otherwise be built against the built-in handful and miss every state blocks.json adds.
         LightProperties.build();
+        RedstoneBlocks.build();
         ItemRegistry.loadIfPresent();
 
         RegionStorage storage = null;

@@ -6,6 +6,7 @@ import dev.quasar.world.ChunkPos;
 import dev.quasar.world.World;
 import dev.quasar.world.light.LightEngine;
 import dev.quasar.world.physics.BlockPhysics;
+import dev.quasar.world.redstone.RedstoneEngine;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.ArrayDeque;
@@ -110,6 +111,9 @@ public final class Region {
     /** Gravity and fluid flow queued by this region, drained under its own budget. */
     private final BlockPhysics physics;
 
+    /** Redstone, likewise per-region: its timing is measured in this region's ticks. */
+    private final RedstoneEngine redstone;
+
     /** Chunks adopted at a safepoint, waiting to be seeded on this region's own thread. */
     private final Queue<Long> pendingLightSeeds = new ConcurrentLinkedQueue<>();
 
@@ -120,6 +124,7 @@ public final class Region {
         this.random = new Random(seed ^ (id * 0x9E3779B97F4A7C15L));
         this.lightEngine = new LightEngine(world);
         this.physics = new BlockPhysics(world);
+        this.redstone = new RedstoneEngine(world);
         this.nextTickNanos = System.nanoTime();
     }
 
@@ -138,6 +143,10 @@ public final class Region {
 
     public BlockPhysics physics() {
         return physics;
+    }
+
+    public RedstoneEngine redstone() {
+        return redstone;
     }
 
 
@@ -396,6 +405,7 @@ public final class Region {
             }
         }
         physics.process(this, tickCount, BlockPhysics.DEFAULT_BUDGET);
+        redstone.process(this, tickCount, RedstoneEngine.DEFAULT_BUDGET);
         lightEngine.processQueue(LightEngine.DEFAULT_BUDGET);
 
         // Tell anyone watching. Every player who could see these chunks is an entity of this region
@@ -439,7 +449,8 @@ public final class Region {
 
             if (single >= 0) {
                 if (!dev.quasar.world.block.Blocks.isFluid(single)
-                        && !dev.quasar.world.block.Blocks.fallsUnderGravity(single)) {
+                        && !dev.quasar.world.block.Blocks.fallsUnderGravity(single)
+                        && !dev.quasar.world.redstone.RedstoneBlocks.isRelevant(single)) {
                     continue;
                 }
             }
@@ -451,6 +462,15 @@ public final class Region {
                         if (dev.quasar.world.block.Blocks.isFluid(state)
                                 || dev.quasar.world.block.Blocks.fallsUnderGravity(state)) {
                             physics.enqueue(baseX + localX, y, baseZ + localZ);
+                        }
+                        // A chunk loaded from disk can hold a circuit mid-signal. Without waking
+                        // it, a lamp saved lit stays lit with nothing driving it.
+                        //
+                        // One array read, not four name comparisons: this runs for every block of
+                        // every non-uniform section of every chunk adopted, and the predicate
+                        // version cost a full TPS on a world containing no redstone at all.
+                        if (dev.quasar.world.redstone.RedstoneBlocks.isRelevant(state)) {
+                            redstone.enqueue(baseX + localX, y, baseZ + localZ);
                         }
                     }
                 }

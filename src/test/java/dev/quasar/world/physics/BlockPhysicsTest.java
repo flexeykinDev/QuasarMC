@@ -9,6 +9,7 @@ import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
 import dev.quasar.world.gen.FlatChunkGenerator;
 import dev.quasar.world.light.LightProperties;
+import dev.quasar.world.redstone.RedstoneBlocks;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +37,7 @@ class BlockPhysicsTest {
     static void buildTables() {
         BlockStateRegistry.loadFullTableIfPresent();
         LightProperties.build();
+        RedstoneBlocks.build();
     }
 
     @BeforeEach

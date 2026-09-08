@@ -16,6 +16,7 @@ import dev.quasar.world.block.BlockConnections;
 import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
+import dev.quasar.world.redstone.RedstoneBlocks;
 import dev.quasar.world.blockentity.ContainerIo;
 import dev.quasar.world.blockentity.Containers;
 import dev.quasar.world.blockentity.OpenContainer;
@@ -1166,6 +1167,13 @@ public final class Player extends Entity {
             return;
         }
 
+        // Likewise for anything that responds to being used. A lever has to flip rather than have a
+        // block built over it, which is what happened before this existed.
+        if (tryUseBlock(region, clickedX, clickedY, clickedZ)) {
+            sendBlockChangedAck(sequence);
+            return;
+        }
+
         int x = clickedX;
         int y = clickedY;
         int z = clickedZ;
@@ -1365,6 +1373,38 @@ public final class Player extends Entity {
                 other.sendBlockUpdate(x, y, z, state);
             }
         }
+    }
+
+    /**
+     * Handles right-clicking a block that does something when used.
+     *
+     * <p>Levers toggle and repeaters step their delay, matching vanilla. Returns false for anything
+     * else so the caller falls through to ordinary placement.
+     *
+     * @return true when the click was consumed
+     */
+    private boolean tryUseBlock(Region region, int x, int y, int z) {
+        if (!isEditAllowed(region, x, y, z)) {
+            return false;
+        }
+        int state = server.world().getBlock(x, y, z);
+
+        int updated;
+        if (RedstoneBlocks.isLever(state)) {
+            updated = RedstoneBlocks.togglePowered(state);
+        } else if (RedstoneBlocks.isRepeater(state)) {
+            updated = RedstoneBlocks.cycleRepeaterDelay(state);
+        } else {
+            return false;
+        }
+        if (updated == state) {
+            return false;
+        }
+        server.world().setBlock(x, y, z, updated);
+        broadcastBlockUpdate(region, x, y, z, updated);
+        Log.debug("%s used %s at %d,%d,%d", name,
+                RedstoneBlocks.isLever(state) ? "a lever" : "a repeater", x, y, z);
+        return true;
     }
 
     public void sendBlockUpdate(int x, int y, int z, int state) {

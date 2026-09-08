@@ -387,6 +387,7 @@ public final class World {
             if (current != null) {
                 current.lightEngine().onBlockChanged(x, y, z, previous, state);
                 current.physics().onBlockChanged(x, y, z);
+                current.redstone().onBlockChanged(x, y, z);
             }
         }
         return true;

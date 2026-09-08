@@ -31,11 +31,12 @@ before you judge it:
 - Item entities: drops fall, merge, and are picked up with no duplication or loss
 - Propagating sky and block light, with no cross-region coordination needed
 - Block physics: sand and gravel fall as entities, water and lava flow and drain
+- Basic redstone: dust, levers, torches, repeaters and lamps
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
-- **Block behaviour.** No redstone, random ticks, or crafting. Gravity and fluids work; nothing
-  else reacts.
+- **Block behaviour.** No random ticks or crafting. Gravity, fluids and basic redstone work;
+  nothing else reacts.
 - **Mobs and combat.** Players, dropped items and falling blocks move; nothing else does.
 - **Survival mechanics.** Containers, the inventory and item entities are real, but there is no
   crafting, and no stack accounting on placement — creative items are infinite and placing never
@@ -569,6 +570,63 @@ creative.
 Add Entity carries no item stack, so a drop is invisible until its metadata arrives; the tracker
 sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
 partial pickup changes the count.
+
+## Redstone
+
+Dust carries power and loses a level per block, levers switch, torches invert, repeaters delay and
+re-emit, and lamps light. Right-clicking a lever flips it; right-clicking a repeater steps its delay.
+
+### Which region owns a redstone component
+
+The roadmap called this the hard question. The answer turned out to be that **no component needs an
+owner, because no component is ever an object**. There is no circuit graph, no network registry,
+nothing spanning chunks that would have to belong to somebody: every value is derived from the
+neighbours of a single block. That is the same shape as fluid flow, and a neighbour is at most one
+chunk away, so any loaded chunk it reaches is in the same region by construction.
+
+A circuit is unbounded — a repeater chain can run for thousands of blocks — and that is fine for the
+same reason a river is: it advances a block per update and re-queues, and cannot outrun the loaded,
+connected chunks that make up its region.
+
+Modelling a "network" object spanning the wire and giving it an owner would have created exactly the
+cross-region shared mutable state this engine exists not to have. Keeping the derivation local is
+what makes redstone free of coordination rather than the hardest thing to coordinate.
+
+### Timing
+
+Dust is instant, as in vanilla: a wire carries at most 15 blocks, so the recomputation is bounded
+and finishes inside the tick that caused it rather than visibly charging up. Torches and repeaters
+introduce the delay, and they schedule their flip for a future tick **of the owning region** — so a
+clock's rate is measured in that region's ticks and stays correct when a region runs behind.
+
+### What it costs when you have none
+
+A block change wakes everything within two blocks, and the check for "is any of this redstone" runs
+constantly. Doing that with name comparisons cost a full TPS on a world containing no redstone at
+all. Both the wake test and the chunk-adoption scan now index a per-state `boolean[]`, and a
+redstone-free world is back to 20.0 TPS at 2.85 MSPT with 1734 chunks loaded.
+
+### Honest limits
+
+- **No pistons, comparators, observers, dispensers or droppers.** Those are the interesting half of
+  redstone and none of them are here.
+- **No buttons or pressure plates.** Levers are the only manual input.
+- **Simplified power model.** Vanilla distinguishes strong from weak power in ways this does not,
+  so some quasi-connectivity and block-powering edge cases will behave differently.
+- **No torch burnout**, so a torch in a fast loop will not stop.
+- **Needs `blocks.json`.** The built-in block table has no redstone in it, so without Mojang's
+  generated report redstone is simply inert rather than wrong.
+
+### On testing this
+
+Seven tests assert power levels and lit flags — redstone that does nothing leaves a perfectly valid
+world behind, so "it ran without throwing" proves nothing. Stubbing out dust propagation fails five
+of them. One test runs a wire across a chunk boundary, which is the region-safety claim in practice
+rather than in prose.
+
+There is deliberately no scripted-client check. The lesson from the physics scenario stands: mouse
+aim cannot reliably hit a specific block face, and a check that cannot hit its target is worse than
+no check.
 
 ## Block physics
 
