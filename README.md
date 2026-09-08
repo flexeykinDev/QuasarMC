@@ -35,6 +35,8 @@ before you judge it:
 - Crafting: all 932 vanilla crafting recipes, at a crafting table
 - Signs you can write on and read back
 - Two-block structures: doors, beds and tall plants place and break as one
+- Doors, trapdoors and fence gates open on right-click (iron ones need redstone, as in vanilla)
+- Water and lava buckets pour and scoop
 - Random ticks: grass spreads onto bare dirt and dies back under cover
 - Item entities persist across chunk unload, in vanilla's own `entities/` region files
 

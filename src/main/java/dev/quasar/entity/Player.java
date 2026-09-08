@@ -19,6 +19,7 @@ import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
 import dev.quasar.world.block.Blocks;
 import dev.quasar.world.block.MultiBlock;
+import dev.quasar.world.block.Openable;
 import dev.quasar.world.blockentity.BlockEntityTypes;
 import dev.quasar.world.blockentity.Signs;
 import dev.quasar.world.redstone.RedstoneBlocks;
@@ -683,7 +684,7 @@ public final class Player extends Entity {
         if (slot == -999) {
             if (!carried.isEmpty()) {
                 int thrown = button == 1 ? carried.count() : 1;
-                dropItem(carried.withCount(thrown));
+                dropItem(carried.withCount(thrown), "clicked outside the crafting window");
                 carried = carried.shrink(thrown);
             }
             sendCraftingContent();
@@ -861,7 +862,7 @@ public final class Player extends Entity {
             // Clicked outside the window: throw the held stack on the ground, as vanilla does.
             if (!carried.isEmpty()) {
                 int thrown = button == 1 ? carried.count() : 1;
-                dropItem(carried.withCount(thrown));
+                dropItem(carried.withCount(thrown), "clicked outside the container window");
                 carried = carried.shrink(thrown);
             }
             sendContainerContent();
@@ -986,7 +987,7 @@ public final class Player extends Entity {
             return;
         }
         int thrown = button == 1 ? inSlot.count() : 1;
-        dropItem(inSlot.withCount(thrown));
+        dropItem(inSlot.withCount(thrown), "Q over a container slot");
         setWindowSlot(container, slot, inSlot.shrink(thrown));
     }
 
@@ -1002,7 +1003,7 @@ public final class Player extends Entity {
             return;
         }
         int thrown = wholeStack ? held.count() : 1;
-        dropItem(held.withCount(thrown));
+        dropItem(held.withCount(thrown), wholeStack ? "Q with control held" : "Q");
         setInventorySlot(slot, held.shrink(thrown));
         sendInventory();
     }
@@ -1148,9 +1149,7 @@ public final class Player extends Entity {
             // Worth saying out loud. An item landing on the floor instead of in the inventory looks
             // to a player like the server threw their materials away, and the only difference
             // between that and a bug is whether there was actually room.
-            Log.debug("%s has no room for %d x item %d; dropping it",
-                    name, leftover.count(), leftover.itemId());
-            dropItem(leftover);
+            dropItem(leftover, "inventory full");
         }
     }
 
@@ -1460,10 +1459,21 @@ public final class Player extends Entity {
      * just left.
      */
     public void dropItem(ItemStack stack) {
+        dropItem(stack, "unknown");
+    }
+
+    /**
+     * @param reason which path threw this, named in the log
+     *
+     * <p>Worth carrying. A player reporting that "everything drops" cannot tell a Q press from a
+     * click outside the window from a container handing items back, and neither could this log:
+     * every path printed the same line, so the report and the evidence were equally ambiguous.
+     */
+    public void dropItem(ItemStack stack, String reason) {
         if (stack.isEmpty()) {
             return;
         }
-        Log.debug("%s dropped %d x item %d", name, stack.count(), stack.itemId());
+        Log.debug("%s dropped %d x item %d (%s)", name, stack.count(), stack.itemId(), reason);
         server.spawnItem(stack, x, y + 1.2, z, ItemEntity.DEFAULT_PICKUP_DELAY);
     }
 
@@ -1554,6 +1564,10 @@ public final class Player extends Entity {
             return;
         }
 
+        if (tryUseBucket(region, clickedX, clickedY, clickedZ, face, sequence)) {
+            return;
+        }
+
         int x = clickedX;
         int y = clickedY;
         int z = clickedZ;
@@ -1638,6 +1652,17 @@ public final class Player extends Entity {
      */
     private void finishEdit(Region region, int x, int y, int z, int sequence) {
         sendBlockChangedAck(sequence);
+
+        // Only read back a position this region actually owns. An edit rejected for being outside
+        // the region still lands here, and reading it anyway is a cross-region read of exactly the
+        // kind the engine forbids -- the ownership assertions caught this in a six-region run.
+        //
+        // The ack above is the part that matters for the client: it retires the prediction either
+        // way. Skipping the authoritative broadcast for a position we may not touch costs nothing,
+        // because an edit that was refused did not change anything to broadcast.
+        if (!region.ownsChunk(x >> 4, z >> 4)) {
+            return;
+        }
         int authoritative = server.world().getBlock(x, y, z);
         broadcastBlockUpdate(region, x, y, z, authoritative);
     }
@@ -1801,10 +1826,16 @@ public final class Player extends Entity {
         int state = server.world().getBlock(x, y, z);
 
         int updated;
+        String what;
         if (RedstoneBlocks.isLever(state)) {
             updated = RedstoneBlocks.togglePowered(state);
+            what = "a lever";
         } else if (RedstoneBlocks.isRepeater(state)) {
             updated = RedstoneBlocks.cycleRepeaterDelay(state);
+            what = "a repeater";
+        } else if (Openable.isOpenable(state)) {
+            updated = Openable.toggleOpen(state);
+            what = "a door";
         } else {
             return false;
         }
@@ -1813,8 +1844,22 @@ public final class Player extends Entity {
         }
         server.world().setBlock(x, y, z, updated);
         broadcastBlockUpdate(region, x, y, z, updated);
-        Log.debug("%s used %s at %d,%d,%d", name,
-                RedstoneBlocks.isLever(state) ? "a lever" : "a repeater", x, y, z);
+
+        // A door is two blocks and both halves carry the open flag. Swinging only the half that was
+        // clicked leaves the other standing shut, which the client draws as a door folded in half.
+        MultiBlock.Partner partner = MultiBlock.partnerOf(state, false);
+        if (partner != null) {
+            int px = x + partner.dx();
+            int py = y + partner.dy();
+            int pz = z + partner.dz();
+            if (server.world().getBlock(px, py, pz) == partner.state()) {
+                int partnerOpen = Openable.toggleOpen(partner.state());
+                server.world().setBlock(px, py, pz, partnerOpen);
+                broadcastBlockUpdate(region, px, py, pz, partnerOpen);
+            }
+        }
+
+        Log.debug("%s used %s at %d,%d,%d", name, what, x, y, z);
         return true;
     }
 
@@ -1896,6 +1941,72 @@ public final class Player extends Entity {
                 });
             }
         }
+    }
+
+    /**
+     * Empties or fills a bucket.
+     *
+     * <p>This is the only way to get water or lava into a creative world: the creative menu has no
+     * fluid block, only the bucket, and a bucket is not a placeable item -- so without this,
+     * "fluids do not work" from a player's side even though the fluid engine is fine.
+     *
+     * @return true when the click was consumed
+     */
+    private boolean tryUseBucket(Region region, int clickedX, int clickedY, int clickedZ,
+                                 int face, int sequence) {
+        ItemStack held = inventorySlot(hotbarSlotIndex());
+        if (held.isEmpty()) {
+            return false;
+        }
+        String item = ItemRegistry.nameFor(held.itemId());
+        boolean water = "minecraft:water_bucket".equals(item);
+        boolean lava = "minecraft:lava_bucket".equals(item);
+        boolean empty = "minecraft:bucket".equals(item);
+        if (!water && !lava && !empty) {
+            return false;
+        }
+
+        if (empty) {
+            // Scooping: the clicked block itself, since a fluid is what was aimed at.
+            int existing = server.world().getBlock(clickedX, clickedY, clickedZ);
+            if (!Blocks.isFluid(existing) || Blocks.fluidLevel(existing) != 0) {
+                // Only a source can be picked up; flowing fluid cannot, as in vanilla.
+                return false;
+            }
+            if (!isEditAllowed(region, clickedX, clickedY, clickedZ)) {
+                return false;
+            }
+            server.world().setBlock(clickedX, clickedY, clickedZ, Blocks.AIR);
+            broadcastBlockUpdate(region, clickedX, clickedY, clickedZ, Blocks.AIR);
+            sendBlockChangedAck(sequence);
+            Log.debug("%s scooped a fluid at %d,%d,%d", name, clickedX, clickedY, clickedZ);
+            return true;
+        }
+
+        // Pouring: into the face that was clicked, like any other placement.
+        int x = clickedX;
+        int y = clickedY;
+        int z = clickedZ;
+        switch (face) {
+            case 0 -> y--;
+            case 1 -> y++;
+            case 2 -> z--;
+            case 3 -> z++;
+            case 4 -> x--;
+            case 5 -> x++;
+            default -> { }
+        }
+        if (!isEditAllowed(region, x, y, z)
+                || !Blocks.isReplaceable(server.world().getBlock(x, y, z))) {
+            return false;
+        }
+
+        int source = Blocks.fluidState(lava, 0);
+        server.world().setBlock(x, y, z, source);
+        broadcastBlockUpdate(region, x, y, z, source);
+        sendBlockChangedAck(sequence);
+        Log.debug("%s poured %s at %d,%d,%d", name, lava ? "lava" : "water", x, y, z);
+        return true;
     }
 
     public void sendBlockUpdate(int x, int y, int z, int state) {
