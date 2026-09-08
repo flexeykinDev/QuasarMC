@@ -199,6 +199,48 @@ class LightEngineTest {
                 "the deferred work still finished the job");
     }
 
+    /**
+     * The reported case: a torch inside an enclosed room, lit the way a chunk loaded from disk is.
+     *
+     * <p>"After rejoin, darkness even if light source." A chunk arriving from Anvil is lit by
+     * lightNewChunk and then seeded, with the heightmap rebuilt by the codec rather than maintained
+     * block by block -- a different path from a chunk built up by setBlock, and the only one a
+     * rejoin uses.
+     */
+    @Test
+    void aTorchInAClosedRoomLightsItAfterAReload() {
+        Chunk chunk = generate(0, 0);
+
+        // A sealed room: floor at SURFACE, walls, roof two above.
+        for (int x = 4; x <= 8; x++) {
+            for (int z = 4; z <= 8; z++) {
+                for (int y = SURFACE + 1; y <= SURFACE + 3; y++) {
+                    chunk.setBlock(x, y, z, Blocks.STONE);
+                }
+            }
+        }
+        for (int x = 5; x <= 7; x++) {
+            for (int z = 5; z <= 7; z++) {
+                chunk.setBlock(x, SURFACE + 1, z, Blocks.AIR);
+                chunk.setBlock(x, SURFACE + 2, z, Blocks.AIR);
+            }
+        }
+        int torch = BlockStateRegistry.defaultStateForBlock("minecraft:torch");
+        chunk.setBlock(6, SURFACE + 1, 6, torch);
+
+        // The load path: rebuild the heightmap wholesale, then light exactly as World does.
+        chunk.recalculateHeightmap();
+        LightEngine.lightNewChunk(chunk);
+        LightEngine engine = world.lightEngineForTesting();
+        engine.seedChunk(chunk);
+        engine.processQueue(1_000_000);
+
+        assertEquals(14, chunk.light().block(6, SURFACE + 1, 6),
+                "the torch itself must be lit after a reload");
+        assertTrue(chunk.light().block(7, SURFACE + 1, 6) > 0,
+                "and the block beside it, or the room is dark with a torch burning in it");
+    }
+
     // ------------------------------------------------------------------------------ properties
 
     @Test

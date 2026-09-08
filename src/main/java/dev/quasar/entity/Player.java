@@ -17,6 +17,7 @@ import dev.quasar.world.ChunkPos;
 import dev.quasar.world.block.BlockConnections;
 import dev.quasar.world.block.BlockPlacement;
 import dev.quasar.world.block.BlockStateRegistry;
+import dev.quasar.world.block.BlockSupport;
 import dev.quasar.world.block.Blocks;
 import dev.quasar.world.block.MultiBlock;
 import dev.quasar.world.block.Openable;
@@ -102,6 +103,14 @@ public final class Player extends Entity {
      */
     private CraftingMenu craftingMenu;
 
+    /**
+     * Whether the player is holding sneak.
+     *
+     * <p>Read on every right-click: sneaking suppresses a block's own behaviour so the click builds
+     * instead. Without it, a chest can never be built against -- every attempt opens it.
+     */
+    private boolean sneaking;
+
     /** Window IDs cycle 1-99; 0 is reserved for the player's own inventory. */
     private int nextWindowId = 1;
 
@@ -144,6 +153,14 @@ public final class Player extends Entity {
         if (slot >= 0 && slot < inventory.length) {
             inventory[slot] = stack == null ? ItemStack.EMPTY : stack;
         }
+    }
+
+    public void setSneaking(boolean sneaking) {
+        this.sneaking = sneaking;
+    }
+
+    public boolean isSneaking() {
+        return sneaking;
     }
 
     public String name() {
@@ -1672,22 +1689,26 @@ public final class Player extends Entity {
         int clickedY = ByteBufs.blockPosY(packedPos);
         int clickedZ = ByteBufs.blockPosZ(packedPos);
 
-        // Right-clicking a container opens it instead of building against it.
-        if (tryOpenContainer(region, clickedX, clickedY, clickedZ)) {
-            sendBlockChangedAck(sequence);
-            return;
-        }
+        // Sneaking suppresses the clicked block's own behaviour, exactly as in vanilla: it is how
+        // you place a block against a chest, a door or a crafting table instead of using it.
+        if (!sneaking) {
+            // Right-clicking a container opens it instead of building against it.
+            if (tryOpenContainer(region, clickedX, clickedY, clickedZ)) {
+                sendBlockChangedAck(sequence);
+                return;
+            }
 
-        // Likewise for anything that responds to being used. A lever has to flip rather than have a
-        // block built over it, which is what happened before this existed.
-        if (tryUseBlock(region, clickedX, clickedY, clickedZ)) {
-            sendBlockChangedAck(sequence);
-            return;
-        }
+            // Likewise for anything that responds to being used. A lever has to flip rather than
+            // have a block built over it, which is what happened before this existed.
+            if (tryUseBlock(region, clickedX, clickedY, clickedZ)) {
+                sendBlockChangedAck(sequence);
+                return;
+            }
 
-        if (tryOpenCraftingTable(region, clickedX, clickedY, clickedZ)) {
-            sendBlockChangedAck(sequence);
-            return;
+            if (tryOpenCraftingTable(region, clickedX, clickedY, clickedZ)) {
+                sendBlockChangedAck(sequence);
+                return;
+            }
         }
 
         if (tryUseBucket(region, clickedX, clickedY, clickedZ, face, sequence)) {
@@ -1720,6 +1741,18 @@ public final class Player extends Entity {
             } else if (Blocks.isReplaceable(existing)) {
                 int placed = BlockPlacement.stateFor(
                         state, face, cursorY, yaw, Blocks.isWater(existing));
+
+                // Refuse a placement the block could not survive: a torch in mid-air, a sign on
+                // nothing. Vanilla asks every block this before placing it, and without the check
+                // an exported world visibly falls apart the moment anything else opens it and
+                // breaks all the floating blocks.
+                if (!hasSupportFor(placed, x, y, z)) {
+                    Log.debug("%s could not place block %d at %d,%d,%d: nothing to support it",
+                            name, placed, x, y, z);
+                    sendBlockChangedAck(sequence);
+                    sendBlockUpdate(x, y, z, existing);
+                    return;
+                }
 
                 // A door, bed or tall plant needs both of its positions. Refusing when the second
                 // one is blocked matches vanilla and is the only honest option: placing just the
@@ -2053,13 +2086,18 @@ public final class Player extends Entity {
         }
         int type = BlockEntityTypes.idFor(id.value());
         if (type < 0) {
+            // Silently skipping was hiding a real possibility: a sign whose text is stored but
+            // never sent looks exactly like a sign whose text was never stored.
+            Log.debug("no block entity type id for %s; not broadcasting it", id.value());
             return;
         }
         int chunkX = x >> 4;
         int chunkZ = z >> 4;
+        int sent = 0;
         for (Entity other : region.entities()) {
             if (other instanceof Player viewer && !viewer.isRemoved()
                     && viewer.hasChunkLoaded(chunkX, chunkZ)) {
+                sent++;
                 viewer.connection.send(Protocol.PLAY_CLIENTBOUND_BLOCK_ENTITY_DATA, buf -> {
                     ByteBufs.writeBlockPos(buf, x, y, z);
                     ByteBufs.writeVarInt(buf, type);
@@ -2067,6 +2105,7 @@ public final class Player extends Entity {
                 });
             }
         }
+        Log.debug("block entity %s at %d,%d,%d sent to %d viewer(s)", id.value(), x, y, z, sent);
     }
 
     /**
@@ -2133,6 +2172,23 @@ public final class Player extends Entity {
         sendBlockChangedAck(sequence);
         Log.debug("%s poured %s at %d,%d,%d", name, lava ? "lava" : "water", x, y, z);
         return true;
+    }
+
+    /** Whether the world can hold this block where it is going. */
+    private boolean hasSupportFor(int state, int x, int y, int z) {
+        BlockSupport.Requirement requirement = BlockSupport.requirementOf(state);
+        if (requirement == BlockSupport.Requirement.NONE) {
+            return true;
+        }
+        if (requirement == BlockSupport.Requirement.FLOOR) {
+            return BlockSupport.canSupport(server.world().getBlockRaw(x, y - 1, z));
+        }
+        int[] offset = BlockSupport.wallSupportOffset(state);
+        if (offset == null) {
+            return true;
+        }
+        return BlockSupport.canSupport(
+                server.world().getBlockRaw(x + offset[0], y + offset[1], z + offset[2]));
     }
 
     public void sendBlockUpdate(int x, int y, int z, int state) {

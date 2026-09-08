@@ -146,6 +146,14 @@ public final class PlayListener implements PacketListener {
                 }
             });
 
+        } else if (packetId == Protocol.PLAY_SERVERBOUND_PLAYER_INPUT) {
+            // One byte of movement flags since 1.21.2. Only the sneak bit matters here, and it
+            // matters a lot: sneaking is what tells a right-click to build against a chest rather
+            // than open it.
+            int flags = data.readByte() & 0xFF;
+            boolean sneaking = (flags & 0x20) != 0;
+            player.submit(() -> player.setSneaking(sneaking));
+
         } else if (packetId == Protocol.PLAY_SERVERBOUND_SIGN_UPDATE) {
             long position = data.readLong();
             boolean front = data.readBoolean();

@@ -149,6 +149,14 @@ public final class Protocol {
     public static final int PLAY_CLIENTBOUND_BLOCK_ENTITY_DATA =
             id("play.clientbound.block_entity_data", 0x07);
 
+    /**
+     * {@code player_input}: a byte of movement flags, including sneak.
+     *
+     * <p>0x20 is the sneak bit. There is no separate "start sneaking" packet in 1.21.2 and later --
+     * the state arrives folded into this one.
+     */
+    public static final int PLAY_SERVERBOUND_PLAYER_INPUT = id("play.serverbound.player_input", 0x29);
+
     /** The finished sign text coming back from the editor. */
     public static final int PLAY_SERVERBOUND_SIGN_UPDATE = id("play.serverbound.sign_update", 0x39);
 

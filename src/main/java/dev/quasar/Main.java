@@ -125,7 +125,8 @@ public final class Main {
                 Log.info("world             chunk, world-gen and persistence counters");
                 Log.info("save              write every edited chunk to disk now");
                 Log.info("saveall           write every loaded chunk, edited or not (world export)");
-                Log.info("mem               heap usage, and a GC hint");
+                Log.info("light <x> <y> <z> block and sky light at a position");
+            Log.info("mem               heap usage, and a GC hint");
                 Log.info("say <message>     broadcast a chat message");
                 Log.info("stop              shut down");
             }
@@ -147,6 +148,33 @@ public final class Main {
             }
             case "save" -> server.saveWorld(true);
             case "saveall" -> server.saveWorld(true, true);
+            case "light" -> {
+                // Answers "is the room dark because the light is wrong, or because it never
+                // reached the client?" -- a question no amount of reading the code settles.
+                // The dispatcher splits into name and remainder only, so the coordinates arrive
+                // as one string and are split again here.
+                String[] coordinates = parts.length > 1 ? parts[1].trim().split("\s+") : new String[0];
+                if (coordinates.length < 3) {
+                    Log.info("usage: light <x> <y> <z>");
+                    break;
+                }
+                try {
+                    int x = Integer.parseInt(coordinates[0]);
+                    int y = Integer.parseInt(coordinates[1]);
+                    int z = Integer.parseInt(coordinates[2]);
+                    var chunk = server.world().chunkAt(x >> 4, z >> 4);
+                    if (chunk == null) {
+                        Log.info("chunk %d,%d is not loaded", x >> 4, z >> 4);
+                        break;
+                    }
+                    Log.info("%d,%d,%d block=%d sky=%d state=%d (chunk %d,%d)", x, y, z,
+                            chunk.light().block(x & 15, y, z & 15),
+                            chunk.light().sky(x & 15, y, z & 15),
+                            chunk.getBlock(x & 15, y, z & 15), x >> 4, z >> 4);
+                } catch (NumberFormatException e) {
+                    Log.info("usage: light <x> <y> <z>");
+                }
+            }
             case "mem" -> {
                 Runtime runtime = Runtime.getRuntime();
                 long used = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024);
