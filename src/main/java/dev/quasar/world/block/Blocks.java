@@ -60,6 +60,43 @@ public final class Blocks {
     public static final int WATER_STATE_MIN = id("water.min", 86);
     public static final int WATER_STATE_MAX = id("water.max", 101);
 
+    public static final int GRAVEL = id("gravel", 124);
+
+    /**
+     * Lava, laid out exactly like water: the state ID is the base plus the {@code level} property,
+     * where 0 is a source, 1-7 are thinning flow, and 8-15 are the falling variants.
+     */
+    public static final int LAVA_STATE_MIN = id("lava.min", 102);
+    public static final int LAVA_STATE_MAX = id("lava.max", 117);
+
+    public static boolean isLava(int stateId) {
+        return stateId >= LAVA_STATE_MIN && stateId <= LAVA_STATE_MAX;
+    }
+
+    public static boolean isFluid(int stateId) {
+        return isWater(stateId) || isLava(stateId);
+    }
+
+    /** The {@code level} property: 0 is a source, 1-7 thinning flow, 8+ falling. */
+    public static int fluidLevel(int stateId) {
+        if (isWater(stateId)) {
+            return stateId - WATER_STATE_MIN;
+        }
+        if (isLava(stateId)) {
+            return stateId - LAVA_STATE_MIN;
+        }
+        return -1;
+    }
+
+    public static int fluidState(boolean lava, int level) {
+        return (lava ? LAVA_STATE_MIN : WATER_STATE_MIN) + Math.max(0, Math.min(15, level));
+    }
+
+    /** Blocks that fall when unsupported. Concrete powder and anvils behave the same in vanilla. */
+    public static boolean fallsUnderGravity(int stateId) {
+        return stateId == SAND || stateId == GRAVEL;
+    }
+
     private Blocks() {}
 
     public static boolean isAir(int stateId) {

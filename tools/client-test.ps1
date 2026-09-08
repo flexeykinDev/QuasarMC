@@ -38,7 +38,7 @@ param(
 
     [int] $Port = 25565,
 
-    [ValidateSet('chat', 'full', 'light')]
+    [ValidateSet('chat', 'full', 'light', 'physics')]
     [string] $Scenario = 'full',
 
     # Attach to a server that is already running instead of starting one.
@@ -115,7 +115,7 @@ public static class Native {
 $SCAN = @{
     W = 0x11; A = 0x1E; S = 0x1F; D = 0x20; Q = 0x10; E = 0x12; T = 0x14
     SPACE = 0x39; ENTER = 0x1C; ESC = 0x01; F2 = 0x3C; SHIFT = 0x2A
-    D1 = 0x02; D2 = 0x03; D3 = 0x04; D9 = 0x0A
+    D1 = 0x02; D2 = 0x03; D3 = 0x04; D4 = 0x05; D9 = 0x0A
 }
 
 $MOUSE = @{
@@ -365,6 +365,35 @@ if ($Scenario -eq 'light') {
     Start-Sleep -Milliseconds 900
 }
 
+if ($Scenario -eq 'physics') {
+    # Gravity and fluid both need a hole to act in, so dig one first, then drop sand into it and
+    # watch it fall. A flat world gives nothing to fall into on its own.
+    Write-Host '  digging a pit'
+    Look 0 400
+    Click 'LEFT' 1500
+    Start-Sleep -Milliseconds 1000
+
+    # Placing against the pit *wall* at head height, not on the floor. Sand put on the floor is
+    # supported and simply sits there, which is what the first version of this scenario tested --
+    # it placed sand on flat ground and proved nothing about gravity.
+    # Pitch is clamped at straight down, so the earlier look-down "overshoots" and has to be fully
+    # undone to get back to level. Undoing only part of it still points at the floor, where sand is
+    # supported and never falls -- which is how the first two attempts at this proved nothing.
+    Write-Host '  levelling out to face the pit wall'
+    Look 0 -500
+    Start-Sleep -Milliseconds 400
+
+    Write-Host '  placing sand against the wall (hotbar slot 4)'
+    Tap $SCAN.D4
+    Start-Sleep -Milliseconds 300
+    Click 'RIGHT'
+    Start-Sleep -Milliseconds 2000
+
+    Write-Host '  screenshot after gravity'
+    Tap $SCAN.F2
+    Start-Sleep -Milliseconds 900
+}
+
 Say 'automation: end'
 Start-Sleep -Seconds 2
 
@@ -379,6 +408,11 @@ $checks = [ordered] @{
     'chat'         = 'automation: begin'
     'moved'        = 'Unhandled play packet'   # presence only; movement itself is silent
 }
+# Deliberately no gravity assertion here. Placing a block against a specific face needs the
+# crosshair on that face, and scripted mouse-look cannot hit it reliably -- three attempts produced
+# three different misses, one of which "passed" while placing sand on flat ground and proving
+# nothing. Gravity and fluid flow are verified deterministically by RegionTickTest instead; this
+# scenario is for looking at, not for asserting on.
 if ($Scenario -eq 'full') {
     $checks['broke a block'] = "$ProfileName broke block"
     $checks['placed a block'] = "$ProfileName placed block"

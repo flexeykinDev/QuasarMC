@@ -90,6 +90,7 @@ public final class LightEngine {
      * loaded and owned by the same region.
      */
     public static void lightNewChunk(Chunk chunk) {
+        chunk.markLit();
         LightStorage light = chunk.light();
         int minY = chunk.minY();
         int maxY = chunk.maxY();

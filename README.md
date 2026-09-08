@@ -30,12 +30,13 @@ before you judge it:
 - Block entities and working containers, stored in Anvil and preserved even when unmodelled
 - Item entities: drops fall, merge, and are picked up with no duplication or loss
 - Propagating sky and block light, with no cross-region coordination needed
+- Block physics: sand and gravel fall as entities, water and lava flow and drain
 
 **Not implemented** — deliberately, and it would be dishonest to imply otherwise:
 
-- **Block behaviour.** No redstone, fluids, random ticks, or crafting. Blocks can be broken and
-  placed, but nothing reacts: gravel floats, water does not flow.
-- **Mobs, combat, physics.** Players move; nothing else does.
+- **Block behaviour.** No redstone, random ticks, or crafting. Gravity and fluids work; nothing
+  else reacts.
+- **Mobs and combat.** Players, dropped items and falling blocks move; nothing else does.
 - **Survival mechanics.** Containers, the inventory and item entities are real, but there is no
   crafting, and no stack accounting on placement — creative items are infinite and placing never
   consumes one. Breaking a block does not drop it, which matches vanilla creative.
@@ -568,6 +569,64 @@ creative.
 Add Entity carries no item stack, so a drop is invisible until its metadata arrives; the tracker
 sends `set_entity_data` (index 8, serializer 7) right after the spawn and again whenever a merge or
 partial pickup changes the count.
+
+## Block physics
+
+Sand and gravel fall when their support goes. Water and lava flow, thin out with distance, fall
+before they spread, and drain when their source is removed.
+
+### Region safety, and how it differs from light
+
+One update step moves a block or a fluid level exactly one block, so it only ever touches the six
+neighbours of a position. A neighbour is at most one chunk away, and any *loaded* chunk one away is
+in the same region — regions are the connected components of "within `LINK_RADIUS` chunks", so two
+adjacent loaded chunks cannot belong to different ones.
+
+Unlike light, a **cascade is unbounded**: water can run for hundreds of blocks. That is still safe,
+because it advances one step per update and re-queues. The frontier can only reach chunks that are
+loaded and connected, which is the same region by construction; where the loaded world ends, the
+flow stops, as it does in vanilla.
+
+Queue entries can still go stale if a region splits between queueing and processing. Rather than
+re-homing the queue, each position is checked against the owning region and dropped if the chunk
+changed hands — the new owner re-seeds its own chunks on adoption.
+
+Unloaded chunks read as **stone**, not air, through `World.getBlockRaw`. `getBlock` answers air,
+which is right for rendering and badly wrong here: air is "replaceable", so water would pour into
+unloaded terrain and sand would fall into it, and both writes would then be silently dropped.
+
+### Rates and budget
+
+Water updates every 5 ticks and lava every 30, matching vanilla, which is what makes a stream creep
+rather than appear. Gravity is checked every tick. Everything drains under a budget of 2048
+positions per region tick, so a large flood defers instead of spiking.
+
+### Honest limits
+
+- **No source forming.** Two adjacent sources over a solid block do not create a third, so infinite
+  water pools do not work.
+- **No fluid interaction.** Water meeting lava does not make stone, cobblestone or obsidian, and
+  nothing catches fire.
+- **Falling blocks do not break anything.** They land on the first non-replaceable block; they do
+  not destroy torches or crops on the way, and they do not hurt anyone.
+- **Only sand and gravel fall.** Concrete powder and anvils behave the same way in vanilla and are
+  not listed.
+
+Cost with six bots and 1751 loaded chunks: worst MSPT 3.09, a full 20.0 TPS, up from 1.90 before
+physics.
+
+### On testing this
+
+The behaviour is proved by unit tests and by `RegionTickTest`, which runs a real region tick and
+asserts sand falls, water spreads, and the chunk gets lit — the tick path itself, not just the
+algorithms.
+
+The scripted-client scenario deliberately asserts **nothing** about gravity. Placing a block against
+a specific face needs the crosshair on that face, and scripted mouse-look could not hit it reliably:
+three attempts produced three different misses, and one of them "passed" while placing sand on flat
+ground, where it is supported and can never fall. That is the same false-confidence trap as the
+pick-block check that passed without a middle-click. `pwsh -File tools/client-test.ps1 -Scenario
+physics` is there to look at, not to assert on.
 
 ## The light engine
 

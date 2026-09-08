@@ -87,6 +87,19 @@ public final class Chunk {
     public LightStorage light() { return light; }
 
     /**
+     * Whether the initial sky-light column pass has run.
+     *
+     * <p>Generation does it on the world-gen thread, where it is free. A chunk that reaches a region
+     * without passing through there would otherwise stay black forever, because seeding only
+     * *spreads* light and has nothing to spread.
+     */
+    public boolean isLit() { return lit; }
+
+    public void markLit() { this.lit = true; }
+
+    private boolean lit;
+
+    /**
      * Y of the highest block in this chunk that light cannot pass through, or {@link #minY()} - 1
      * when the chunk is empty.
      *

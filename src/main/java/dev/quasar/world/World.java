@@ -325,6 +325,47 @@ public final class World {
         return chunk == null ? Blocks.AIR : chunk.getBlock(x & 15, y, z & 15);
     }
 
+    /**
+     * Reads a block, treating an unloaded chunk as solid rather than as air.
+     *
+     * <p>{@link #getBlock} answers AIR for a chunk that is not loaded, which is right for rendering
+     * questions and badly wrong for physics: air reads as "replaceable", so water would pour into
+     * unloaded terrain and sand would fall into it, and both writes would then be silently dropped.
+     * Reporting solid instead makes physics stop at the edge of the loaded world, which is what
+     * vanilla does too.
+     */
+    /**
+     * Spawns a falling block. Set by the server at startup; absent in tests, where physics runs
+     * without an entity system and a block simply stays put.
+     */
+    public void setFallingBlockSpawner(FallingBlockSpawner spawner) {
+        this.fallingBlockSpawner = spawner;
+    }
+
+    public void spawnFallingBlock(int blockState, double x, double y, double z) {
+        if (fallingBlockSpawner != null) {
+            fallingBlockSpawner.spawn(blockState, x, y, z);
+        }
+    }
+
+    /** Lets the world start a falling block without depending on the entity or server packages. */
+    public interface FallingBlockSpawner {
+        void spawn(int blockState, double x, double y, double z);
+    }
+
+    private FallingBlockSpawner fallingBlockSpawner;
+
+    public int getBlockRaw(int x, int y, int z) {
+        if (y < minY || y > maxY()) {
+            return Blocks.STONE;
+        }
+        Chunk chunk = chunkAt(x >> 4, z >> 4);
+        if (chunk == null) {
+            return Blocks.STONE;
+        }
+        return chunk.getBlock(x & 15, y, z & 15);
+    }
+
     /** Writes a block. Same ownership rule as {@link #getBlock}. */
     public boolean setBlock(int x, int y, int z, int state) {
         Ownership.checkBlockAccess(regionManager, "Writing a block", x, y, z);
@@ -345,6 +386,7 @@ public final class World {
             Region current = Region.current();
             if (current != null) {
                 current.lightEngine().onBlockChanged(x, y, z, previous, state);
+                current.physics().onBlockChanged(x, y, z);
             }
         }
         return true;

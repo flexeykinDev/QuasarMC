@@ -140,6 +140,10 @@ public final class Protocol {
     /** Registry ID of {@code minecraft:item}. */
     public static final int ENTITY_TYPE_ITEM = Integer.getInteger("quasar.itemEntityType", 68);
 
+    /** {@code minecraft:falling_block}. Its spawn packet's data field carries the block state ID. */
+    public static final int ENTITY_TYPE_FALLING_BLOCK =
+            Integer.getInteger("quasar.fallingBlockEntityType", 49);
+
     /**
      * Entity metadata slot holding an item entity's stack, and the serializer that encodes it.
      *

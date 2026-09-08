@@ -65,7 +65,7 @@ vanilla worlds, at least partially.
 
 | Priority | Feature | Why it matters / how to do it smarter than Folia |
 |----------|---------|--------------------------------------------------|
-| P0 | Block physics (gravel, sand, water, lava) | Implement as region-local simulation with a mailbox for boundaries |
+| ~~P0~~ **done** | Block physics (gravel, sand, water, lava) | Region-local as planned, and no mailbox needed: one step moves one block, and adjacent loaded chunks are always the same region. Cascades are unbounded but advance a step at a time. See the README. |
 | P0 | Redstone (at least basic) | The hardest part. Needs a clear model of "this redstone component belongs to this region" |
 | P1 | Random ticks | Easy, but important for crop growth |
 | P1 | Block updates / neighbour updates | Carefully, without cascading cross-region explosions |
@@ -163,7 +163,7 @@ concurrency), with a clean and documented architecture.
 **The critical path — none of this is optional for production:**
 
 1. ~~Light engine~~ — done
-2. Block physics and water
+2. ~~Block physics and water~~ — done
 3. Basic redstone
 4. Inventory and crafting
 5. Stable persistence

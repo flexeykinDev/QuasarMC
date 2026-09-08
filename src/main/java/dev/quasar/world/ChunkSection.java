@@ -53,6 +53,17 @@ public final class ChunkSection {
         return nonAirCount;
     }
 
+    /**
+     * The single state filling a uniform section, or -1 when it varies.
+     *
+     * <p>Lets a caller skip 4096 blocks with one comparison. The physics scan needs this: without
+     * it, adopting a chunk walks every block of every section, and most sections of a generated
+     * world are solid stone or empty air with nothing that could ever move.
+     */
+    public int singleState() {
+        return states == null ? uniformState : -1;
+    }
+
     public int get(int x, int y, int z) {
         return states == null ? uniformState & 0xFFFF : states[index(x, y, z)] & 0xFFFF;
     }

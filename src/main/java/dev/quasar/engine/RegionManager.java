@@ -134,6 +134,16 @@ public final class RegionManager {
      *
      * @return the number of changes applied
      */
+    /**
+     * Applies queued structural changes. Test-only.
+     *
+     * <p>Normally the scheduler calls this from inside a real safepoint. A test has no scheduler,
+     * so it marks a safepoint itself and drives the partition directly.
+     */
+    public int applyPendingAtSafepointForTesting() {
+        return applyPendingAtSafepoint();
+    }
+
     int applyPendingAtSafepoint() {
         int applied = 0;
         // Held as region references, not IDs: a candidate can be merged away later in this same

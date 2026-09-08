@@ -947,8 +947,19 @@ public final class Player extends Entity {
             });
         }
 
-        int type = entity instanceof Player
-                ? Protocol.ENTITY_TYPE_PLAYER : Protocol.ENTITY_TYPE_ITEM;
+        int type;
+        if (entity instanceof Player) {
+            type = Protocol.ENTITY_TYPE_PLAYER;
+        } else if (entity instanceof FallingBlockEntity) {
+            type = Protocol.ENTITY_TYPE_FALLING_BLOCK;
+        } else {
+            type = Protocol.ENTITY_TYPE_ITEM;
+        }
+
+        // Add Entity's "data" field is type-specific. A falling block puts its block state there --
+        // the only way the client knows whether it is watching sand or gravel, since unlike an item
+        // entity there is no follow-up metadata packet carrying it.
+        int spawnData = entity instanceof FallingBlockEntity falling ? falling.blockState() : 0;
         connection.send(Protocol.PLAY_CLIENTBOUND_ADD_ENTITY, buf -> {
             ByteBufs.writeVarInt(buf, entity.entityId());
             ByteBufs.writeUuid(buf, entity.uuid());
@@ -959,7 +970,7 @@ public final class Player extends Entity {
             ByteBufs.writeAngle(buf, entity.pitch());
             ByteBufs.writeAngle(buf, entity.yaw());
             ByteBufs.writeAngle(buf, entity.yaw()); // head yaw
-            ByteBufs.writeVarInt(buf, 0);           // type-specific data
+            ByteBufs.writeVarInt(buf, spawnData);   // type-specific data
             buf.writeShort(0);
             buf.writeShort(0);
             buf.writeShort(0);

@@ -5,6 +5,7 @@ import dev.quasar.util.Log;
 import dev.quasar.world.ChunkPos;
 import dev.quasar.world.World;
 import dev.quasar.world.light.LightEngine;
+import dev.quasar.world.physics.BlockPhysics;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 
 import java.util.ArrayDeque;
@@ -106,6 +107,9 @@ public final class Region {
     /** Light propagation queued by this region, drained under a budget at the end of its tick. */
     private final LightEngine lightEngine;
 
+    /** Gravity and fluid flow queued by this region, drained under its own budget. */
+    private final BlockPhysics physics;
+
     /** Chunks adopted at a safepoint, waiting to be seeded on this region's own thread. */
     private final Queue<Long> pendingLightSeeds = new ConcurrentLinkedQueue<>();
 
@@ -115,6 +119,7 @@ public final class Region {
         this.manager = manager;
         this.random = new Random(seed ^ (id * 0x9E3779B97F4A7C15L));
         this.lightEngine = new LightEngine(world);
+        this.physics = new BlockPhysics(world);
         this.nextTickNanos = System.nanoTime();
     }
 
@@ -129,6 +134,29 @@ public final class Region {
 
     public LightEngine lightEngine() {
         return lightEngine;
+    }
+
+    public BlockPhysics physics() {
+        return physics;
+    }
+
+
+    /**
+     * Tells everyone in this region who can see it that a block changed.
+     *
+     * <p>A plain loop for the same reason block edits are: every player who could witness the change
+     * is an entity of this region already.
+     */
+    public void broadcastBlockUpdate(int x, int y, int z, int state) {
+        int chunkX = x >> 4;
+        int chunkZ = z >> 4;
+        for (Entity entity : entities) {
+            if (entity instanceof dev.quasar.entity.Player player
+                    && !player.isRemoved()
+                    && player.hasChunkLoaded(chunkX, chunkZ)) {
+                player.sendBlockUpdate(x, y, z, state);
+            }
+        }
     }
 
     public World world() {
@@ -357,9 +385,17 @@ public final class Region {
             dev.quasar.world.Chunk chunk =
                     world.chunkAt(ChunkPos.keyX(seed), ChunkPos.keyZ(seed));
             if (chunk != null) {
+                // Normally generation has already done this on its own thread. Doing it here as a
+                // fallback costs a tick's worth of work once, and is the difference between a
+                // correctly lit chunk and a permanently black one.
+                if (!chunk.isLit()) {
+                    LightEngine.lightNewChunk(chunk);
+                }
                 lightEngine.seedChunk(chunk);
+                seedPhysics(chunk);
             }
         }
+        physics.process(this, tickCount, BlockPhysics.DEFAULT_BUDGET);
         lightEngine.processQueue(LightEngine.DEFAULT_BUDGET);
 
         // Tell anyone watching. Every player who could see these chunks is an entity of this region
@@ -378,6 +414,45 @@ public final class Region {
                         world.chunkAt(ChunkPos.keyX(key), ChunkPos.keyZ(key));
                 if (chunk != null) {
                     player.sendLightUpdate(chunk);
+                }
+            }
+        }
+    }
+
+    /**
+     * Wakes physics for a chunk this region has just adopted.
+     *
+     * <p>Only the fluid and gravity blocks matter, so this looks for those rather than queueing
+     * every position: a chunk is nearly 100k blocks and almost none of them will ever move.
+     */
+    private void seedPhysics(dev.quasar.world.Chunk chunk) {
+        int baseX = chunk.x() << 4;
+        int baseZ = chunk.z() << 4;
+
+        // Section by section, skipping any that is a single repeated state. Most of a generated
+        // world is uniform stone or uniform air, and walking those block by block made adopting a
+        // chunk cost 98k reads -- enough to drag a busy server off 20 TPS on its own.
+        for (int index = 0; index < chunk.sectionCount(); index++) {
+            dev.quasar.world.ChunkSection section = chunk.section(index);
+            int single = section.singleState();
+            int sectionMinY = chunk.minY() + (index << 4);
+
+            if (single >= 0) {
+                if (!dev.quasar.world.block.Blocks.isFluid(single)
+                        && !dev.quasar.world.block.Blocks.fallsUnderGravity(single)) {
+                    continue;
+                }
+            }
+            for (int localX = 0; localX < 16; localX++) {
+                for (int localZ = 0; localZ < 16; localZ++) {
+                    for (int dy = 0; dy < 16; dy++) {
+                        int y = sectionMinY + dy;
+                        int state = chunk.getBlock(localX, y, localZ);
+                        if (dev.quasar.world.block.Blocks.isFluid(state)
+                                || dev.quasar.world.block.Blocks.fallsUnderGravity(state)) {
+                            physics.enqueue(baseX + localX, y, baseZ + localZ);
+                        }
+                    }
                 }
             }
         }
